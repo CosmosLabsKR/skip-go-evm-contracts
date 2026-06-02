@@ -2,8 +2,8 @@
 src = "src"
 out = "out"
 libs = ["lib"]
-# Injective EVM은 PUSH0를 지원함이 확인됨(기존 컨트랙트가 PUSH0 바이트코드로 동작).
-# paris 설정 시 PUSH0 포함 컨트랙트 호출이 revm에서 NotActivated로 실패하므로 shanghai 사용.
+# Injective EVM is confirmed to support PUSH0 (existing contracts run with PUSH0 bytecode).
+# With the paris setting, calls to contracts containing PUSH0 fail in revm with NotActivated, so use shanghai.
 evm_version = "shanghai"
 
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options
