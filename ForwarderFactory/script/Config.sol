@@ -14,6 +14,9 @@ uint256 constant CHAIN_INJECTIVE = 1776;
 address constant USDC_MAINNET = 0xa00C59fF5a080D2b954d0c75e46E22a0c371235a;
 
 // Payment Contract (CCTPV2Relayer) address (WARNING: to be filled after deployment — placeholder)
+// ⚠️ address(0) placeholder until the real CCTPV2Relayer is deployed on Injective mainnet.
+//    A mainnet (1776) deploy reverts with ZeroAddress while this is unset — an intentional safeguard.
+//    testnet (1439) deploys are unaffected (they use PAYMENT_CONTRACT_INJECTIVE_TESTNET).
 address constant PAYMENT_CONTRACT_INJECTIVE = address(0);
 
 // Relayer/Operator address
@@ -28,7 +31,7 @@ uint256 constant CHAIN_INJECTIVE_TESTNET = 1439;
 address constant USDC_INJECTIVE_TESTNET = 0x0C382e685bbeeFE5d3d9C29e29E341fEE8E84C5d;
 
 // Payment Contract (CCTPV2Relayer) address (WARNING: to be filled after deployment — placeholder)
-address constant PAYMENT_CONTRACT_INJECTIVE_TESTNET = address(0);
+address constant PAYMENT_CONTRACT_INJECTIVE_TESTNET = 0x364e4b2C10F9c3409C40289B98BfA5590603C804;
 
 // Relayer/Operator address
 address constant OPERATOR_INJECTIVE_TESTNET = 0xd706c3F4aD08F695ddC8a301a6a63B263a0A3Ac3;

@@ -13,10 +13,10 @@ contract CreateForwarderScript is BaseScript {
 
         ForwarderFactory factory = ForwarderFactory(factoryAddress);
         // sender: route identifier and fund recovery authority (merged recover role)
-        address sender = 0xd706c3F4aD08F695ddC8a301a6a63B263a0A3Ac3;
-        uint32 destinationDomain = 1;
+        address sender = 0x455AAA40C707AFE214E30f418C3DD145aDFC953F;
+        uint32 destinationDomain = 0; // Sepolia testnet domain (to be updated for mainnet)
         // mintRecipient: destination receiving address as bytes32 (e.g. an EVM address left-padded)
-        bytes32 mintRecipient = bytes32(uint256(uint160(0xd706c3F4aD08F695ddC8a301a6a63B263a0A3Ac3)));
+        bytes32 mintRecipient = bytes32(uint256(uint160(0x455AAA40C707AFE214E30f418C3DD145aDFC953F)));
 
         address predictedAddress = factory.getForwarderAddress(sender, destinationDomain, mintRecipient);
         address newForwarder = factory.createForwarder(sender, destinationDomain, mintRecipient);

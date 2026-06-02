@@ -57,6 +57,10 @@ contract BaseScript is Script {
             usdc = USDC_POLYGON_MUMBAI;
             messenger = MESSENGER_POLYGON_MUMBAI;
             transmitter = TRANSMITTER_POLYGON_MUMBAI;
+        } else if (block.chainid == CHAIN_INJECTIVE) {
+            usdc = USDC_INJECTIVE;
+            messenger = MESSENGER_INJECTIVE;
+            transmitter = TRANSMITTER_INJECTIVE;
         } else if (block.chainid == CHAIN_INJECTIVE_TESTNET) {
             usdc = USDC_INJECTIVE_TESTNET;
             messenger = MESSENGER_INJECTIVE_TESTNET;
