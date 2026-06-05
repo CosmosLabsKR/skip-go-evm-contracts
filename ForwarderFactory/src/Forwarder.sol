@@ -13,7 +13,7 @@ import {ICCTPV2Relayer} from "./interfaces/ICCTPV2Relayer.sol";
  *         - requestTransfer / requestTransferWithCaller: delegate held USDC to the PaymentContract (CCTPV2Relayer)
  *           via requestCCTPTransfer / requestCCTPTransferWithCaller (operator-only, fixed route).
  *           maxFee/minFinalityThreshold/hookData (+destinationCaller) are supplied by the operator per call.
- *         - recoverERC20/recoverNative: sender-only escape hatch (sender = fund owner / recovery authority).
+ *         - recoverERC20: operator-only escape hatch (operator authority).
  * @dev config (usdc/paymentContract/operator) is impl immutable and shared by all instances (changed in bulk via
  *      a beacon upgrade). Per-instance values live in proxy storage. The reentrancy guard reuses the simple bool
  *      pattern from CCTPRelayer.
@@ -48,7 +48,7 @@ contract Forwarder is Initializable {
     error InvalidMaxFee(); // CCTP v2 requires maxFee < transferAmount
     error InvalidFinalityThreshold(); // minFinalityThreshold must be 1000 (fast) or 2000 (standard)
     error Reentrancy();
-    error NativeSendFailed();
+    error NativeNotAccepted();
 
     event TransferRequested(
         uint256 transferAmount,
@@ -64,11 +64,6 @@ contract Forwarder is Initializable {
         _reentrant = true;
         _;
         _reentrant = false;
-    }
-
-    modifier onlySender() {
-        if (msg.sender != sender) revert NotSender();
-        _;
     }
 
     modifier onlyOperator() {
@@ -152,19 +147,13 @@ contract Forwarder is Initializable {
     }
 
     /// @notice sender-only escape hatch — recover the entire ERC20 balance.
-    function recoverERC20(address token) external onlySender nonReentrant {
+    function recoverERC20(address token) external onlyOperator nonReentrant {
         uint256 bal = IERC20(token).balanceOf(address(this));
         IERC20(token).safeTransfer(sender, bal);
         emit Recovered(token, bal);
     }
 
-    /// @notice sender-only escape hatch — recover the entire native balance.
-    function recoverNative() external onlySender nonReentrant {
-        uint256 bal = address(this).balance;
-        (bool ok,) = sender.call{value: bal}("");
-        if (!ok) revert NativeSendFailed();
-        emit Recovered(address(0), bal);
+    receive() external payable {
+        revert NativeNotAccepted();
     }
-
-    receive() external payable {}
 }

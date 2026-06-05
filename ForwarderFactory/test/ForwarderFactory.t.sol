@@ -536,22 +536,6 @@ contract ForwarderFactoryTest is Test {
         assertEq(usdc.balanceOf(address(f)), 0);
     }
 
-    // TC-21: recoverNative (sender-only)
-    function test_TC21_RecoverNative() public {
-        Forwarder f = Forwarder(payable(factory.createForwarder(sender, destDomain, mintRecipient)));
-        vm.deal(address(f), 3 ether);
-
-        vm.prank(address(0xDEAD));
-        vm.expectRevert(Forwarder.NotSender.selector);
-        f.recoverNative();
-
-        uint256 balBefore = sender.balance;
-        vm.prank(sender);
-        f.recoverNative();
-        assertEq(sender.balance, balBefore + 3 ether);
-        assertEq(address(f).balance, 0);
-    }
-
     // TC-22: operator rotation (beacon upgrade) → applied to all instances in bulk
     function test_TC22_OperatorRotation() public {
         Forwarder f = _deployFunded(1000e6);
