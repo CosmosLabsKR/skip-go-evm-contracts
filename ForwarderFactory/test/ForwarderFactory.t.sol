@@ -147,7 +147,7 @@ contract ReentrantRelayer is ICCTPV2Relayer {
 contract ForwarderV2 is Forwarder {
     constructor(address u, address p, address o) Forwarder(u, p, o) {}
 
-    function version() external pure returns (uint256) {
+    function version() external pure override returns (uint256) {
         return 2;
     }
 }
@@ -523,17 +523,31 @@ contract ForwarderFactoryTest is Test {
         assertEq(relayer.lastHookData().length, 160, "160 bytes");
     }
 
-    // TC-20: recoverERC20 (sender-only)
+    // TC-20: recoverERC20 (operator-only)
     function test_TC20_RecoverERC20() public {
         Forwarder f = _deployFunded(777e6);
         vm.prank(address(0xDEAD));
-        vm.expectRevert(Forwarder.NotSender.selector);
+        vm.expectRevert(Forwarder.NotOperator.selector);
         f.recoverERC20(address(usdc));
 
-        vm.prank(sender);
+        vm.prank(operator);
         f.recoverERC20(address(usdc));
         assertEq(usdc.balanceOf(sender), 777e6);
         assertEq(usdc.balanceOf(address(f)), 0);
+    }
+
+    // TC-21: direct native transfers are rejected
+    function test_TC21_ReceiveRejectsNativeTransfer() public {
+        Forwarder f = Forwarder(payable(factory.createForwarder(sender, destDomain, mintRecipient)));
+        address payer = address(0xE7A);
+        vm.deal(payer, 1 ether);
+
+        vm.prank(payer);
+        (bool ok, bytes memory data) = address(f).call{value: 1 wei}("");
+
+        assertFalse(ok, "native transfer must revert");
+        assertEq(bytes4(data), Forwarder.NativeNotAccepted.selector);
+        assertEq(address(f).balance, 0);
     }
 
     // TC-22: operator rotation (beacon upgrade) → applied to all instances in bulk

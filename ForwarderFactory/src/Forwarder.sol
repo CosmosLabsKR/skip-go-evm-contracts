@@ -29,8 +29,7 @@ contract Forwarder is Initializable {
     address public immutable operator;
 
     // ── per-instance (proxy storage) ──
-    /// @notice Route identifier and fund owner / recovery authority (merged the former recover role). Authorizes
-    ///         recoverERC20/Native.
+    /// @notice Route identifier and fund owner / recovery recipient.
     address public sender;
     uint32 public destinationDomain;
     bool private _reentrant;
@@ -41,7 +40,6 @@ contract Forwarder is Initializable {
 
     error ZeroAddress();
     error UsdcMismatch(); // paymentContract.usdc() != usdc (blocks deploying a mismatched impl)
-    error NotSender();
     error NotOperator();
     error ZeroAmount();
     error ZeroFee(); // CCTP v2 disallows feeAmount == 0
@@ -57,7 +55,7 @@ contract Forwarder is Initializable {
         uint32 minFinalityThreshold,
         bytes32 destinationCaller
     );
-    event Recovered(address indexed token, uint256 amount); // token == address(0) means native
+    event Recovered(address indexed token, uint256 amount);
 
     modifier nonReentrant() {
         if (_reentrant) revert Reentrancy();
@@ -84,9 +82,15 @@ contract Forwarder is Initializable {
 
     /// @notice Called once by the factory right after deployment to inject the identity values.
     function initialize(address _sender, uint32 _destinationDomain, bytes32 _mintRecipient) external initializer {
+        if (_sender == address(0)) revert ZeroAddress();
+        if (_mintRecipient == bytes32(0)) revert ZeroAddress();
         sender = _sender;
         destinationDomain = _destinationDomain;
         mintRecipient = _mintRecipient;
+    }
+
+    function version() external pure virtual returns (uint256) {
+        return 1;
     }
 
     /// @dev Shared by both transfer functions: v2 validity checks + forceApprove to the PaymentContract.
@@ -146,14 +150,19 @@ contract Forwarder is Initializable {
         emit TransferRequested(transferAmount, feeAmount, maxFee, minFinalityThreshold, destinationCaller);
     }
 
-    /// @notice sender-only escape hatch — recover the entire ERC20 balance.
+    /// @notice operator-only escape hatch — recover the entire ERC20 balance to sender.
     function recoverERC20(address token) external onlyOperator nonReentrant {
         uint256 bal = IERC20(token).balanceOf(address(this));
         IERC20(token).safeTransfer(sender, bal);
         emit Recovered(token, bal);
     }
 
+    /// @notice Reject direct native transfers; this forwarder only accepts ERC20 deposits.
     receive() external payable {
+        revert NativeNotAccepted();
+    }
+
+    fallback() external payable {
         revert NativeNotAccepted();
     }
 }
