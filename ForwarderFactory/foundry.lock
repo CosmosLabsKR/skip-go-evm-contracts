@@ -1,0 +1,50 @@
+{
+  "../CCTPRelayer/lib/forge-std": {
+    "rev": "ae570fec082bfe1c1f45b0acca4a2b4f84d345ce"
+  },
+  "../CCTPRelayer/lib/openzeppelin-contracts": {
+    "rev": "932fddf69a699a9a80fd2396fd1a2ab91cdda123"
+  },
+  "../CCTPRelayer/lib/openzeppelin-contracts-upgradeable": {
+    "rev": "625fb3c2b2696f1747ba2e72d1e1113066e6c177"
+  },
+  "../CCTPV2Relayer/lib/forge-std": {
+    "rev": "ae570fec082bfe1c1f45b0acca4a2b4f84d345ce"
+  },
+  "../CCTPV2Relayer/lib/openzeppelin-contracts": {
+    "rev": "932fddf69a699a9a80fd2396fd1a2ab91cdda123"
+  },
+  "../CCTPV2Relayer/lib/openzeppelin-contracts-upgradeable": {
+    "rev": "625fb3c2b2696f1747ba2e72d1e1113066e6c177"
+  },
+  "../EurekaHandler/lib/forge-std": {
+    "rev": "87989d2f1bd1142be444674eae61437947a16ad6"
+  },
+  "../EurekaHandler/lib/openzeppelin-contracts": {
+    "rev": "fa995ef1fe66e1447783cb6038470aba23a6343f"
+  },
+  "../EurekaHandler/lib/openzeppelin-contracts-upgradeable": {
+    "rev": "3d5fa5c24c411112bab47bec25cfa9ad0af0e6e8"
+  },
+  "../EurekaHandler/lib/solidity-ibc-eureka": {
+    "rev": "c1f07c0a04bb5b1bac1e28894df03506adf056bc"
+  },
+  "../SwapRouter/lib/forge-std": {
+    "rev": "77041d2ce690e692d6e03cc812b57d1ddaa4d505"
+  },
+  "../SwapRouter/lib/openzeppelin-contracts": {
+    "rev": "e4f70216d759d8e6a64144a9e1f7bbeed78e7079"
+  },
+  "../SwapRouter/lib/openzeppelin-contracts-upgradeable": {
+    "rev": "60b305a8f3ff0c7688f02ac470417b6bbf1c4d27"
+  },
+  "lib/forge-std": {
+    "rev": "ae570fec082bfe1c1f45b0acca4a2b4f84d345ce"
+  },
+  "lib/openzeppelin-contracts": {
+    "rev": "932fddf69a699a9a80fd2396fd1a2ab91cdda123"
+  },
+  "lib/openzeppelin-contracts-upgradeable": {
+    "rev": "a8bbd0d9288e0c77d1b1a472e0e2e12acb3ccd00"
+  }
+}

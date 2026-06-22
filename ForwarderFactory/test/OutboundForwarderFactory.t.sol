@@ -6,12 +6,13 @@ import "forge-std/Test.sol";
 import {Initializable} from "openzeppelin-contracts-upgradeable/proxy/utils/Initializable.sol";
 import {OwnableUpgradeable} from "openzeppelin-contracts-upgradeable/access/OwnableUpgradeable.sol";
 import {ERC1967Proxy} from "openzeppelin-contracts/proxy/ERC1967/ERC1967Proxy.sol";
+import {Create2} from "openzeppelin-contracts/utils/Create2.sol";
 import {IERC20} from "openzeppelin-contracts/token/ERC20/IERC20.sol";
 import {ERC20Mock} from "openzeppelin-contracts/mocks/token/ERC20Mock.sol";
 
-import {ForwarderFactory} from "../src/ForwarderFactory.sol";
-import {IForwarderFactory} from "../src/interfaces/IForwarderFactory.sol";
-import {Forwarder} from "../src/Forwarder.sol";
+import {OutboundForwarderFactory} from "../src/OutboundForwarderFactory.sol";
+import {IOutboundForwarderFactory} from "../src/interfaces/IOutboundForwarderFactory.sol";
+import {OutboundForwarder} from "../src/OutboundForwarder.sol";
 import {ICCTPV2Relayer} from "../src/interfaces/ICCTPV2Relayer.sol";
 
 /// @dev PaymentContract mock that records CCTP v2 requestCCTPTransfer / requestCCTPTransferWithCaller and pulls USDC via transferFrom.
@@ -113,20 +114,20 @@ contract MockCCTPV2Relayer is ICCTPV2Relayer {
 /// @dev Malicious relayer that, during requestCCTPTransfer, re-enters target.requestTransfer (nonReentrant guard test).
 contract ReentrantRelayer is ICCTPV2Relayer {
     IERC20 public immutable usdc;
-    Forwarder public target;
+    OutboundForwarder public target;
     uint32 internal _minFinality;
 
     constructor(IERC20 _usdc) {
         usdc = _usdc;
     }
 
-    function setTarget(Forwarder _t, uint32 mf) external {
+    function setTarget(OutboundForwarder _t, uint32 mf) external {
         target = _t;
         _minFinality = mf;
     }
 
     function requestCCTPTransfer(uint256, uint32, bytes32, address, uint256, uint256, uint32, bytes calldata) external {
-        // Re-entry attempt → Forwarder.nonReentrant reverts with Reentrancy (bubbles up).
+        // Re-entry attempt → OutboundForwarder.nonReentrant reverts with Reentrancy (bubbles up).
         target.requestTransfer(1e6, 1e6, 1, _minFinality, hex"");
     }
 
@@ -143,9 +144,9 @@ contract ReentrantRelayer is ICCTPV2Relayer {
     ) external {}
 }
 
-/// @dev V2 used for the Forwarder logic-upgrade test (same storage layout + version()). Same immutables re-injected.
-contract ForwarderV2 is Forwarder {
-    constructor(address u, address p, address o) Forwarder(u, p, o) {}
+/// @dev V2 used for the OutboundForwarder logic-upgrade test (same storage layout + version()). Same immutables re-injected.
+contract OutboundForwarderV2 is OutboundForwarder {
+    constructor(address u, address p, address o) OutboundForwarder(u, p, o) {}
 
     function version() external pure override returns (uint256) {
         return 2;
@@ -153,16 +154,16 @@ contract ForwarderV2 is Forwarder {
 }
 
 /// @dev V2 used for the factory UUPS-upgrade test.
-contract ForwarderFactoryV2 is ForwarderFactory {
+contract OutboundForwarderFactoryV2 is OutboundForwarderFactory {
     function factoryVersion() external pure returns (uint256) {
         return 2;
     }
 }
 
-contract ForwarderFactoryTest is Test {
-    ForwarderFactory internal factory;
-    ForwarderFactory internal impl;
-    Forwarder internal forwarderImpl;
+contract OutboundForwarderFactoryTest is Test {
+    OutboundForwarderFactory internal factory;
+    OutboundForwarderFactory internal impl;
+    OutboundForwarder internal forwarderImpl;
 
     ERC20Mock internal usdc;
     MockCCTPV2Relayer internal relayer;
@@ -180,11 +181,11 @@ contract ForwarderFactoryTest is Test {
     function setUp() public {
         usdc = new ERC20Mock();
         relayer = new MockCCTPV2Relayer(IERC20(address(usdc)));
-        forwarderImpl = new Forwarder(address(usdc), address(relayer), operator);
-        impl = new ForwarderFactory();
+        forwarderImpl = new OutboundForwarder(address(usdc), address(relayer), operator);
+        impl = new OutboundForwarderFactory();
         ERC1967Proxy proxy =
-            new ERC1967Proxy(address(impl), abi.encodeCall(ForwarderFactory.initialize, (address(forwarderImpl))));
-        factory = ForwarderFactory(address(proxy));
+            new ERC1967Proxy(address(impl), abi.encodeCall(OutboundForwarderFactory.initialize, (address(forwarderImpl))));
+        factory = OutboundForwarderFactory(address(proxy));
     }
 
     // ─────────────────────────── identity / address (3-tuple) ───────────────────────────
@@ -195,6 +196,35 @@ contract ForwarderFactoryTest is Test {
         address deployed = factory.createForwarder(sender, destDomain, mintRecipient);
         assertEq(deployed, predicted, "predicted must equal deployed");
         assertTrue(deployed.code.length > 0, "forwarder must have code");
+    }
+
+    // TC-01b: predicted address matches an independent recomputation of the shared base formula.
+    // Guards against any drift in ForwarderFactoryBase._predict / beaconInitCodeHash introduced by the
+    // factory-abstraction refactor (the funds-critical predicted-address invariant, FR-3/FR-4).
+    function test_TC01b_PredictMatchesIndependentFormula() public {
+        bytes32 salt = keccak256(abi.encode(sender, destDomain, mintRecipient));
+        address independent = Create2.computeAddress(salt, factory.beaconInitCodeHash(), address(factory));
+        assertEq(
+            factory.getForwarderAddress(sender, destDomain, mintRecipient),
+            independent,
+            "predict must match the canonical CREATE2 formula"
+        );
+    }
+
+    // TC-01c GOLDEN VECTOR (funds-critical): freezes the salt PREIMAGE (the abi.encode arg order/types) against an
+    // externally-computed literal. TC01b proves _predict matches the CREATE2 formula but does NOT pin the preimage, so
+    // a reorder/retype of (sender, destinationDomain, mintRecipient) could silently move every predicted address —
+    // orphaning the funds of already-deployed forwarders — yet still pass if TC01b were edited in lockstep. The literal
+    // below was computed independently of this source:
+    //   cast keccak $(cast abi-encode "f(address,uint32,bytes32)" 0xA1 7 0xBEEF)
+    function test_TC01c_GoldenVector_SaltPreimageFrozen() public {
+        bytes32 frozenSalt = 0x6c260661d37d1b43f2ee3565330bc025deeef9a73dc07e302d2dcee0c9f32507;
+        address fromFrozenSalt = Create2.computeAddress(frozenSalt, factory.beaconInitCodeHash(), address(factory));
+        assertEq(
+            factory.getForwarderAddress(address(0xA1), uint32(7), bytes32(uint256(0xBEEF))),
+            fromFrozenSalt,
+            "salt preimage drifted from frozen golden vector"
+        );
     }
 
     // TC-02: idempotent
@@ -216,32 +246,32 @@ contract ForwarderFactoryTest is Test {
     // TC-04: duplicate deploy reverts
     function test_TC04_DuplicateDeployReverts() public {
         address deployed = factory.createForwarder(sender, destDomain, mintRecipient);
-        vm.expectRevert(abi.encodeWithSelector(IForwarderFactory.ForwarderAlreadyDeployed.selector, deployed));
+        vm.expectRevert(abi.encodeWithSelector(IOutboundForwarderFactory.ForwarderAlreadyDeployed.selector, deployed));
         factory.createForwarder(sender, destDomain, mintRecipient);
     }
 
     // TC-05: input validation
     function test_TC05_ZeroSenderReverts() public {
-        vm.expectRevert(IForwarderFactory.ZeroAddress.selector);
+        vm.expectRevert(IOutboundForwarderFactory.ZeroAddress.selector);
         factory.createForwarder(address(0), destDomain, mintRecipient);
     }
 
     function test_TC05_EmptyMintRecipientReverts() public {
-        vm.expectRevert(IForwarderFactory.EmptyMintRecipient.selector);
+        vm.expectRevert(IOutboundForwarderFactory.EmptyMintRecipient.selector);
         factory.createForwarder(sender, destDomain, bytes32(0));
     }
 
     // TC-06: event
-    function test_TC06_EmitsForwarderDeployed() public {
+    function test_TC06_EmitsOutboundForwarderDeployed() public {
         address predicted = factory.getForwarderAddress(sender, destDomain, mintRecipient);
         vm.expectEmit(true, true, false, true);
-        emit IForwarderFactory.ForwarderDeployed(predicted, sender, destDomain, mintRecipient);
+        emit IOutboundForwarderFactory.OutboundForwarderDeployed(predicted, sender, destDomain, mintRecipient);
         factory.createForwarder(sender, destDomain, mintRecipient);
     }
 
     // TC-07: child state
     function test_TC07_ChildStateInitialized() public {
-        Forwarder f = Forwarder(payable(factory.createForwarder(sender, destDomain, mintRecipient)));
+        OutboundForwarder f = OutboundForwarder(payable(factory.createForwarder(sender, destDomain, mintRecipient)));
         assertEq(f.sender(), sender);
         assertEq(f.destinationDomain(), destDomain);
         assertEq(f.mintRecipient(), mintRecipient);
@@ -249,13 +279,13 @@ contract ForwarderFactoryTest is Test {
 
     // TC-08: factory UUPS onlyOwner
     function test_TC08_FactoryUpgradeOnlyOwner() public {
-        ForwarderFactoryV2 newImpl = new ForwarderFactoryV2();
+        OutboundForwarderFactoryV2 newImpl = new OutboundForwarderFactoryV2();
         address attacker = address(0xBEEF);
         vm.prank(attacker);
         vm.expectRevert(abi.encodeWithSelector(OwnableUpgradeable.OwnableUnauthorizedAccount.selector, attacker));
         factory.upgradeToAndCall(address(newImpl), "");
         factory.upgradeToAndCall(address(newImpl), "");
-        assertEq(ForwarderFactoryV2(address(factory)).factoryVersion(), 2);
+        assertEq(OutboundForwarderFactoryV2(address(factory)).factoryVersion(), 2);
     }
 
     // TC-09: deployer = proxy
@@ -281,13 +311,13 @@ contract ForwarderFactoryTest is Test {
     }
 
     // TC-11: initialization protection
-    function test_TC11_CannotInitializeForwarderImpl() public {
+    function test_TC11_CannotInitializeOutboundForwarderImpl() public {
         vm.expectRevert(Initializable.InvalidInitialization.selector);
         forwarderImpl.initialize(sender, destDomain, mintRecipient);
     }
 
-    function test_TC11_CannotReinitializeDeployedForwarder() public {
-        Forwarder f = Forwarder(payable(factory.createForwarder(sender, destDomain, mintRecipient)));
+    function test_TC11_CannotReinitializeDeployedOutboundForwarder() public {
+        OutboundForwarder f = OutboundForwarder(payable(factory.createForwarder(sender, destDomain, mintRecipient)));
         vm.expectRevert(Initializable.InvalidInitialization.selector);
         f.initialize(sender, destDomain, mintRecipient);
     }
@@ -319,7 +349,7 @@ contract ForwarderFactoryTest is Test {
         address before = factory.getForwarderAddress(sender, destDomain, mintRecipient);
         assertEq(factory.createForwarder(sender, destDomain, mintRecipient), before);
 
-        ForwarderV2 v2 = new ForwarderV2(address(usdc), address(relayer), operator);
+        OutboundForwarderV2 v2 = new OutboundForwarderV2(address(usdc), address(relayer), operator);
         factory.upgradeForwarderImplementation(address(v2));
 
         assertEq(factory.getForwarderAddress(sender, destDomain, mintRecipient), before, "addr stable");
@@ -331,8 +361,8 @@ contract ForwarderFactoryTest is Test {
     }
 
     // TC-14: beacon upgrade onlyOwner
-    function test_TC14_UpgradeForwarderImplOnlyOwner() public {
-        ForwarderV2 v2 = new ForwarderV2(address(usdc), address(relayer), operator);
+    function test_TC14_UpgradeOutboundForwarderImplOnlyOwner() public {
+        OutboundForwarderV2 v2 = new OutboundForwarderV2(address(usdc), address(relayer), operator);
         address attacker = address(0xBEEF);
         vm.prank(attacker);
         vm.expectRevert(abi.encodeWithSelector(OwnableUpgradeable.OwnableUnauthorizedAccount.selector, attacker));
@@ -341,24 +371,24 @@ contract ForwarderFactoryTest is Test {
     }
 
     // TC-15: existing instance uses V2 logic after upgrade + state preserved
-    function test_TC15_DeployedForwarderUsesNewLogicAfterUpgrade() public {
+    function test_TC15_DeployedOutboundForwarderUsesNewLogicAfterUpgrade() public {
         address addr = factory.createForwarder(sender, destDomain, mintRecipient);
-        ForwarderV2 v2 = new ForwarderV2(address(usdc), address(relayer), operator);
+        OutboundForwarderV2 v2 = new OutboundForwarderV2(address(usdc), address(relayer), operator);
         factory.upgradeForwarderImplementation(address(v2));
-        assertEq(ForwarderV2(payable(addr)).version(), 2, "uses upgraded logic");
-        assertEq(ForwarderV2(payable(addr)).sender(), sender, "state persists");
+        assertEq(OutboundForwarderV2(payable(addr)).version(), 2, "uses upgraded logic");
+        assertEq(OutboundForwarderV2(payable(addr)).sender(), sender, "state persists");
     }
 
     // ─────────────────────────── fund logic (CCTP v2) ───────────────────────────
 
-    function _deployFunded(uint256 amount) internal returns (Forwarder f) {
-        f = Forwarder(payable(factory.createForwarder(sender, destDomain, mintRecipient)));
+    function _deployFunded(uint256 amount) internal returns (OutboundForwarder f) {
+        f = OutboundForwarder(payable(factory.createForwarder(sender, destDomain, mintRecipient)));
         usdc.mint(address(f), amount);
     }
 
     // TC-16: requestTransfer calls requestCCTPTransfer (8-arg) correctly + moves USDC + forwards v2 params
     function test_TC16_RequestTransferDelegates() public {
-        Forwarder f = _deployFunded(1000e6);
+        OutboundForwarder f = _deployFunded(1000e6);
         vm.prank(operator);
         f.requestTransfer(900e6, 10e6, 5e6, minFinality, hex"");
 
@@ -379,7 +409,7 @@ contract ForwarderFactoryTest is Test {
 
     // TC-16b: requestTransferWithCaller calls requestCCTPTransferWithCaller (9-arg) correctly
     function test_TC16b_RequestTransferWithCallerDelegates() public {
-        Forwarder f = _deployFunded(1000e6);
+        OutboundForwarder f = _deployFunded(1000e6);
         bytes memory hook = hex"1234";
         vm.prank(operator);
         f.requestTransferWithCaller(800e6, 20e6, 7e6, 2000, destCaller, hook);
@@ -399,7 +429,7 @@ contract ForwarderFactoryTest is Test {
 
     // TC-16c: maxFee == 0 standard transfer succeeds (maxFee = 0 is legal in v2)
     function test_TC16c_MaxFeeZeroStandardTransfer() public {
-        Forwarder f = _deployFunded(1000e6);
+        OutboundForwarder f = _deployFunded(1000e6);
         vm.prank(operator);
         f.requestTransfer(900e6, 10e6, 0, 2000, hex"");
         assertEq(relayer.callCount(), 1);
@@ -409,27 +439,27 @@ contract ForwarderFactoryTest is Test {
 
     // TC-16d: maxFee boundary — transferAmount-1 succeeds, transferAmount reverts (>= boundary)
     function test_TC16d_MaxFeeBoundary() public {
-        Forwarder f = _deployFunded(1000e6);
+        OutboundForwarder f = _deployFunded(1000e6);
         vm.prank(operator);
         f.requestTransfer(900e6, 10e6, 900e6 - 1, minFinality, hex"");
         assertEq(relayer.lastMaxFee(), 900e6 - 1, "maxFee == amount-1 ok");
 
         vm.prank(operator);
-        vm.expectRevert(Forwarder.InvalidMaxFee.selector);
+        vm.expectRevert(OutboundForwarder.InvalidMaxFee.selector);
         f.requestTransfer(900e6, 10e6, 900e6, minFinality, hex"");
     }
 
     // TC-17: both functions are operator-only (non-operator / sender revert)
     function test_TC17_RequestTransferOnlyOperator() public {
-        Forwarder f = _deployFunded(1000e6);
+        OutboundForwarder f = _deployFunded(1000e6);
         address[2] memory bad = [address(0xDEAD), sender];
         for (uint256 i = 0; i < bad.length; i++) {
             vm.prank(bad[i]);
-            vm.expectRevert(Forwarder.NotOperator.selector);
+            vm.expectRevert(OutboundForwarder.NotOperator.selector);
             f.requestTransfer(100e6, 1e6, 1e6, minFinality, hex"");
 
             vm.prank(bad[i]);
-            vm.expectRevert(Forwarder.NotOperator.selector);
+            vm.expectRevert(OutboundForwarder.NotOperator.selector);
             f.requestTransferWithCaller(100e6, 1e6, 1e6, minFinality, destCaller, hex"");
         }
         vm.prank(operator);
@@ -439,55 +469,55 @@ contract ForwarderFactoryTest is Test {
 
     // TC-18: transferAmount == 0 → ZeroAmount (both functions)
     function test_TC18_RequestTransferZeroAmount() public {
-        Forwarder f = _deployFunded(1000e6);
+        OutboundForwarder f = _deployFunded(1000e6);
         vm.prank(operator);
-        vm.expectRevert(Forwarder.ZeroAmount.selector);
+        vm.expectRevert(OutboundForwarder.ZeroAmount.selector);
         f.requestTransfer(0, 1e6, 0, minFinality, hex"");
 
         vm.prank(operator);
-        vm.expectRevert(Forwarder.ZeroAmount.selector);
+        vm.expectRevert(OutboundForwarder.ZeroAmount.selector);
         f.requestTransferWithCaller(0, 1e6, 0, minFinality, destCaller, hex"");
     }
 
     // TC-18b: feeAmount == 0 → ZeroFee (both functions, v2 constraint)
     function test_TC18b_RequestTransferZeroFee() public {
-        Forwarder f = _deployFunded(1000e6);
+        OutboundForwarder f = _deployFunded(1000e6);
         vm.prank(operator);
-        vm.expectRevert(Forwarder.ZeroFee.selector);
+        vm.expectRevert(OutboundForwarder.ZeroFee.selector);
         f.requestTransfer(100e6, 0, 1e6, minFinality, hex"");
 
         vm.prank(operator);
-        vm.expectRevert(Forwarder.ZeroFee.selector);
+        vm.expectRevert(OutboundForwarder.ZeroFee.selector);
         f.requestTransferWithCaller(100e6, 0, 1e6, minFinality, destCaller, hex"");
     }
 
     // TC-18c: maxFee >= transferAmount → InvalidMaxFee (both functions, v2 constraint)
     function test_TC18c_RequestTransferInvalidMaxFee() public {
-        Forwarder f = _deployFunded(1000e6);
+        OutboundForwarder f = _deployFunded(1000e6);
         vm.prank(operator);
-        vm.expectRevert(Forwarder.InvalidMaxFee.selector);
+        vm.expectRevert(OutboundForwarder.InvalidMaxFee.selector);
         f.requestTransfer(100e6, 1e6, 100e6, minFinality, hex"");
 
         vm.prank(operator);
-        vm.expectRevert(Forwarder.InvalidMaxFee.selector);
+        vm.expectRevert(OutboundForwarder.InvalidMaxFee.selector);
         f.requestTransferWithCaller(100e6, 1e6, 100e6, minFinality, destCaller, hex"");
     }
 
     // TC-18d: minFinalityThreshold other than 1000/2000 → InvalidFinalityThreshold (both functions)
     function test_TC18d_RequestTransferInvalidFinality() public {
-        Forwarder f = _deployFunded(1000e6);
+        OutboundForwarder f = _deployFunded(1000e6);
         vm.prank(operator);
-        vm.expectRevert(Forwarder.InvalidFinalityThreshold.selector);
+        vm.expectRevert(OutboundForwarder.InvalidFinalityThreshold.selector);
         f.requestTransfer(100e6, 1e6, 1e6, 1500, hex"");
 
         vm.prank(operator);
-        vm.expectRevert(Forwarder.InvalidFinalityThreshold.selector);
+        vm.expectRevert(OutboundForwarder.InvalidFinalityThreshold.selector);
         f.requestTransferWithCaller(100e6, 1e6, 1e6, 999, destCaller, hex"");
     }
 
     // TC-19: fixed route (operator cannot change it — no route in the args), both functions
     function test_TC19_FixedRoute() public {
-        Forwarder f = _deployFunded(1000e6);
+        OutboundForwarder f = _deployFunded(1000e6);
         vm.prank(operator);
         f.requestTransfer(500e6, 5e6, 1e6, minFinality, hex"");
         assertEq(uint256(relayer.lastDomain()), uint256(destDomain), "domain fixed");
@@ -501,7 +531,7 @@ contract ForwarderFactoryTest is Test {
 
     // TC-19b: hookData passthrough (empty + non-empty)
     function test_TC19b_HookDataPassthrough() public {
-        Forwarder f = _deployFunded(1000e6);
+        OutboundForwarder f = _deployFunded(1000e6);
         vm.prank(operator);
         f.requestTransfer(100e6, 1e6, 1e6, minFinality, hex"");
         assertEq(relayer.lastHookData().length, 0, "empty hookData");
@@ -514,7 +544,7 @@ contract ForwarderFactoryTest is Test {
 
     // TC-19c: long hookData (160B, varied) passthrough
     function test_TC19c_LongHookDataPassthrough() public {
-        Forwarder f = _deployFunded(1000e6);
+        OutboundForwarder f = _deployFunded(1000e6);
         bytes memory hook =
             abi.encode(keccak256("hook-a"), keccak256("hook-b"), uint256(123456), address(this), destCaller);
         vm.prank(operator);
@@ -525,9 +555,9 @@ contract ForwarderFactoryTest is Test {
 
     // TC-20: recoverERC20 (operator-only)
     function test_TC20_RecoverERC20() public {
-        Forwarder f = _deployFunded(777e6);
+        OutboundForwarder f = _deployFunded(777e6);
         vm.prank(address(0xDEAD));
-        vm.expectRevert(Forwarder.NotOperator.selector);
+        vm.expectRevert(OutboundForwarder.NotOperator.selector);
         f.recoverERC20(address(usdc));
 
         vm.prank(operator);
@@ -538,7 +568,7 @@ contract ForwarderFactoryTest is Test {
 
     // TC-21: direct native transfers are rejected
     function test_TC21_ReceiveRejectsNativeTransfer() public {
-        Forwarder f = Forwarder(payable(factory.createForwarder(sender, destDomain, mintRecipient)));
+        OutboundForwarder f = OutboundForwarder(payable(factory.createForwarder(sender, destDomain, mintRecipient)));
         address payer = address(0xE7A);
         vm.deal(payer, 1 ether);
 
@@ -546,21 +576,21 @@ contract ForwarderFactoryTest is Test {
         (bool ok, bytes memory data) = address(f).call{value: 1 wei}("");
 
         assertFalse(ok, "native transfer must revert");
-        assertEq(bytes4(data), Forwarder.NativeNotAccepted.selector);
+        assertEq(bytes4(data), OutboundForwarder.NativeNotAccepted.selector);
         assertEq(address(f).balance, 0);
     }
 
     // TC-22: operator rotation (beacon upgrade) → applied to all instances in bulk
     function test_TC22_OperatorRotation() public {
-        Forwarder f = _deployFunded(1000e6);
+        OutboundForwarder f = _deployFunded(1000e6);
         address operator2 = address(0x0EE2);
 
-        ForwarderV2 v2 = new ForwarderV2(address(usdc), address(relayer), operator2);
+        OutboundForwarderV2 v2 = new OutboundForwarderV2(address(usdc), address(relayer), operator2);
         factory.upgradeForwarderImplementation(address(v2));
 
         // The old operator is no longer allowed
         vm.prank(operator);
-        vm.expectRevert(Forwarder.NotOperator.selector);
+        vm.expectRevert(OutboundForwarder.NotOperator.selector);
         f.requestTransfer(100e6, 1e6, 1e6, minFinality, hex"");
 
         // The new operator succeeds
@@ -569,40 +599,69 @@ contract ForwarderFactoryTest is Test {
         assertEq(relayer.callCount(), 1);
     }
 
-    // TC-23: Forwarder constructor zero-address validation
+    // TC-23: OutboundForwarder constructor zero-address validation
     function test_TC23_ConstructorZeroReverts() public {
-        vm.expectRevert(Forwarder.ZeroAddress.selector);
-        new Forwarder(address(0), address(relayer), operator);
-        vm.expectRevert(Forwarder.ZeroAddress.selector);
-        new Forwarder(address(usdc), address(0), operator);
-        vm.expectRevert(Forwarder.ZeroAddress.selector);
-        new Forwarder(address(usdc), address(relayer), address(0));
+        vm.expectRevert(OutboundForwarder.ZeroAddress.selector);
+        new OutboundForwarder(address(0), address(relayer), operator);
+        vm.expectRevert(OutboundForwarder.ZeroAddress.selector);
+        new OutboundForwarder(address(usdc), address(0), operator);
+        vm.expectRevert(OutboundForwarder.ZeroAddress.selector);
+        new OutboundForwarder(address(usdc), address(relayer), address(0));
     }
 
     // TC-23b: USDC equality guard — constructor reverts when paymentContract.usdc() != usdc
     function test_TC23b_ConstructorUsdcMismatch() public {
         ERC20Mock usdc2 = new ERC20Mock();
         // relayer.usdc() == usdc (original) != usdc2 → UsdcMismatch
-        vm.expectRevert(Forwarder.UsdcMismatch.selector);
-        new Forwarder(address(usdc2), address(relayer), operator);
+        vm.expectRevert(OutboundForwarder.UsdcMismatch.selector);
+        new OutboundForwarder(address(usdc2), address(relayer), operator);
     }
 
     // TC-24: nonReentrant guard — relayer re-entering requestTransfer reverts with Reentrancy
     function test_TC24_ReentrancyGuard() public {
         ReentrantRelayer rr = new ReentrantRelayer(IERC20(address(usdc)));
         // operator = relayer so the re-entry passes onlyOperator and reaches the nonReentrant guard
-        Forwarder rImpl = new Forwarder(address(usdc), address(rr), address(rr));
-        ForwarderFactory rFactImpl = new ForwarderFactory();
+        OutboundForwarder rImpl = new OutboundForwarder(address(usdc), address(rr), address(rr));
+        OutboundForwarderFactory rFactImpl = new OutboundForwarderFactory();
         ERC1967Proxy rProxy =
-            new ERC1967Proxy(address(rFactImpl), abi.encodeCall(ForwarderFactory.initialize, (address(rImpl))));
-        ForwarderFactory rFactory = ForwarderFactory(address(rProxy));
+            new ERC1967Proxy(address(rFactImpl), abi.encodeCall(OutboundForwarderFactory.initialize, (address(rImpl))));
+        OutboundForwarderFactory rFactory = OutboundForwarderFactory(address(rProxy));
 
-        Forwarder f = Forwarder(payable(rFactory.createForwarder(sender, destDomain, mintRecipient)));
+        OutboundForwarder f = OutboundForwarder(payable(rFactory.createForwarder(sender, destDomain, mintRecipient)));
         usdc.mint(address(f), 1000e6);
         rr.setTarget(f, minFinality);
 
         vm.prank(address(rr));
-        vm.expectRevert(Forwarder.Reentrancy.selector);
+        vm.expectRevert(OutboundForwarder.Reentrancy.selector);
         f.requestTransfer(100e6, 1e6, 1e6, minFinality, hex"");
+    }
+
+    // ─────────────────────────── isForwarderDeployed ───────────────────────────
+
+    // TC-25: false before deploy, true after; predicted address matches getForwarderAddress
+    function test_TC25_IsForwarderDeployed_FalseThenTrue() public {
+        assertFalse(factory.isForwarderDeployed(sender, destDomain, mintRecipient), "false pre-deploy");
+        address deployed = factory.createForwarder(sender, destDomain, mintRecipient);
+        assertEq(deployed, factory.getForwarderAddress(sender, destDomain, mintRecipient), "predicted == deployed");
+        assertTrue(factory.isForwarderDeployed(sender, destDomain, mintRecipient), "true post-deploy");
+    }
+
+    // TC-26: route-sensitive — deploying one route does not report another as deployed
+    function test_TC26_IsForwarderDeployed_RouteSensitive() public {
+        factory.createForwarder(sender, destDomain, mintRecipient);
+        assertFalse(factory.isForwarderDeployed(address(0x1234), destDomain, mintRecipient), "other sender");
+        assertFalse(factory.isForwarderDeployed(sender, destDomain + 1, mintRecipient), "other domain");
+        assertFalse(factory.isForwarderDeployed(sender, destDomain, bytes32(uint256(1))), "other recipient");
+    }
+
+    // TC-27: front-run is harmless — a third party calling createForwarder deploys the canonical forwarder
+    // bound to the route key (sender/domain/recipient), so isForwarderDeployed stays an authoritative proof.
+    function test_TC27_FrontRunDeploysCanonicalForwarder() public {
+        vm.prank(address(0xDEAD));
+        OutboundForwarder f = OutboundForwarder(payable(factory.createForwarder(sender, destDomain, mintRecipient)));
+        assertTrue(factory.isForwarderDeployed(sender, destDomain, mintRecipient), "deployed");
+        assertEq(f.sender(), sender, "sender bound to route key");
+        assertEq(f.destinationDomain(), destDomain, "domain bound to route key");
+        assertEq(f.mintRecipient(), mintRecipient, "recipient bound to route key");
     }
 }

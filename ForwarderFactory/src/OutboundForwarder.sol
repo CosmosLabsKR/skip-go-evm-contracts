@@ -8,7 +8,7 @@ import {SafeERC20} from "openzeppelin-contracts/token/ERC20/utils/SafeERC20.sol"
 import {ICCTPV2Relayer} from "./interfaces/ICCTPV2Relayer.sol";
 
 /**
- * @title Forwarder
+ * @title OutboundForwarder
  * @notice Per-route fund conduit (logic impl behind a BeaconProxy), bound to (sender, destinationDomain, mintRecipient).
  *         - requestTransfer / requestTransferWithCaller: delegate held USDC to the PaymentContract (CCTPV2Relayer)
  *           via requestCCTPTransfer / requestCCTPTransferWithCaller (operator-only, fixed route).
@@ -18,7 +18,7 @@ import {ICCTPV2Relayer} from "./interfaces/ICCTPV2Relayer.sol";
  *      a beacon upgrade). Per-instance values live in proxy storage. The reentrancy guard reuses the simple bool
  *      pattern from CCTPRelayer.
  */
-contract Forwarder is Initializable {
+contract OutboundForwarder is Initializable {
     using SafeERC20 for IERC20;
 
     // ── config (impl immutable, shared by all instances; injected by Deployment) ──
@@ -71,7 +71,7 @@ contract Forwarder is Initializable {
 
     constructor(address usdc_, address paymentContract_, address operator_) {
         if (usdc_ == address(0) || paymentContract_ == address(0) || operator_ == address(0)) revert ZeroAddress();
-        // Enforce the Forwarder.usdc == paymentContract.usdc == burnToken invariant at deploy time
+        // Enforce the OutboundForwarder.usdc == paymentContract.usdc == burnToken invariant at deploy time
         // (blocks an immutable+beacon mismatch).
         if (address(ICCTPV2Relayer(paymentContract_).usdc()) != usdc_) revert UsdcMismatch();
         usdc = IERC20(usdc_);

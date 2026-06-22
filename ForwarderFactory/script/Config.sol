@@ -3,7 +3,7 @@ pragma solidity >=0.8.0 <0.9.0;
 
 // Address constants are declared as `address` because BaseScript uses them as addresses.
 // WARNING: PAYMENT_CONTRACT_* are placeholders (address(0)) — replace with real addresses after CCTPV2Relayer is deployed.
-//    If a deploy script runs while they are address(0), the Forwarder constructor reverts with ZeroAddress (unset-value safeguard).
+//    If a deploy script runs while they are address(0), the OutboundForwarder constructor reverts with ZeroAddress (unset-value safeguard).
 
 // Injective EVM (Mainnet)
 
@@ -35,3 +35,17 @@ address constant PAYMENT_CONTRACT_INJECTIVE_TESTNET = 0x364e4b2C10F9c3409C40289B
 
 // Relayer/Operator address
 address constant OPERATOR_INJECTIVE_TESTNET = 0xd706c3F4aD08F695ddC8a301a6a63B263a0A3Ac3;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Inbound (CCTP v2 receive → Injective IBC) config
+// ─────────────────────────────────────────────────────────────────────────────
+
+// CCTP v2 MessageTransmitter on Injective EVM (source: CCTPV2Relayer/script/Config.sol — confirmed).
+// InboundForwarder calls transmitter.receiveMessage(message, attestation) to mint USDC.
+address constant TRANSMITTER_INJECTIVE = 0x81D40F21F12A8F0E3252Bccb954D722d4c464B64;
+address constant TRANSMITTER_INJECTIVE_TESTNET = 0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275;
+
+// Injective's CCTP domain (binding check: message.destinationDomain == this).
+// Confirmed from cctp-integration-harness/internal/config/validate.go (InjectiveCCTPDomain = 29).
+// CCTP domains identify the chain, not the network → same value for mainnet (1776) and testnet (1439).
+uint32 constant INJECTIVE_CCTP_DOMAIN = 29;
