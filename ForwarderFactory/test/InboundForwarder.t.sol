@@ -392,16 +392,6 @@ contract InboundForwarderTest is Test {
         fwd.mintAndRoute(message, "");
     }
 
-    function test_RejectsWrongBurnToken() public {
-        bytes memory message = _buildMessage(
-            INJ_DOMAIN, keccak256("n6"), bytes32(uint256(uint160(sourceSender))),
-            address(0x1234), address(fwd), 1_000_000, _validHook(bytes("m"))
-        );
-        vm.prank(operator);
-        vm.expectRevert(IInboundForwarder.WrongBurnToken.selector);
-        fwd.mintAndRoute(message, "");
-    }
-
     function test_RejectsWrongSender() public {
         bytes memory message = _buildMessage(
             INJ_DOMAIN, keccak256("n7"), bytes32(uint256(uint160(address(0x9999)))),

@@ -154,8 +154,6 @@ contract InboundForwarder is IInboundForwarder, Initializable {
         message.validateLength();
         if (message._getDestinationDomain() != INJECTIVE_DOMAIN) revert WrongDestination();
         if (message._getMintRecipient() != _toBytes32(address(this))) revert WrongRecipient();
-        if (message._getBurnToken() != _toBytes32(address(usdc))) revert WrongBurnToken();
-        // Burn-body messageSender = source depositor (per-route identity), compared against the bound sender.
         if (message._getMessageSender() != _toBytes32(sender)) revert WrongSender();
     }
 

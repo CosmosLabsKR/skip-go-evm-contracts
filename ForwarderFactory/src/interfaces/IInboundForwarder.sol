@@ -23,7 +23,6 @@ interface IInboundForwarder {
     error NothingMinted(); // balance delta after receiveMessage was zero
     error WrongDestination(); // message.destinationDomain != INJECTIVE_DOMAIN
     error WrongRecipient(); // burn.mintRecipient != address(this)
-    error WrongBurnToken(); // burn.burnToken != usdc
     error WrongSender(); // burn.messageSender != bound sender
     error ZeroAmount();
     error MissingBalance(); // refund amount exceeds current balance
