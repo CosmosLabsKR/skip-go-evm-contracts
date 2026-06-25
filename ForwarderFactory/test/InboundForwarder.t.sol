@@ -356,6 +356,30 @@ contract InboundForwarderTest is Test {
         fwd.refund(1);
     }
 
+    // ── T3b: refund() refunds the full held balance ──
+    function test_RefundAll_FullBalance() public {
+        usdc.mint(address(fwd), 250_000); // simulate IBC-returned funds
+        vm.expectEmit(true, true, false, true, address(fwd));
+        emit Refunded(bytes32(0), sourceSender, 250_000, IInboundForwarder.RefundKind.PostRoute);
+        vm.prank(operator);
+        fwd.refund();
+        assertEq(usdc.balanceOf(sourceSender), 250_000);
+        assertEq(usdc.balanceOf(address(fwd)), 0);
+    }
+
+    function test_RefundAll_RevertsOnZeroBalance() public {
+        vm.prank(operator);
+        vm.expectRevert(IInboundForwarder.ZeroAmount.selector);
+        fwd.refund();
+    }
+
+    function test_RefundAll_OnlyOperator() public {
+        usdc.mint(address(fwd), 1);
+        vm.prank(address(0xDEAD));
+        vm.expectRevert(IInboundForwarder.NotOperator.selector);
+        fwd.refund();
+    }
+
     // ── T9: residual balance — mintAndRoute uses delta, not full balance ──
     function test_MintAndRoute_UsesDeltaNotBalance() public {
         usdc.mint(address(fwd), 777); // pre-existing residual

@@ -9,7 +9,7 @@ interface IInboundForwarder {
     /// @notice Distinguishes the two refund situations recorded by the Refunded event.
     enum RefundKind {
         MintTime, // mintAndRefund: minted then immediately refunded (never routed)
-        PostRoute // refund(amount): funds returned to this forwarder after a downstream IBC failure
+        PostRoute // refund()/refund(amount): funds returned to this forwarder after a downstream IBC failure
     }
 
     // ── Errors ──
@@ -47,6 +47,7 @@ interface IInboundForwarder {
     // ── State-changing (operator-only) ──
     function mintAndRoute(bytes calldata message, bytes calldata attestation) external;
     function mintAndRefund(bytes calldata message, bytes calldata attestation) external;
+    function refund() external;
     function refund(uint256 amount) external;
 
     // ── Views ──

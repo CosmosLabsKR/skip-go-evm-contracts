@@ -25,13 +25,19 @@ contract OutboundForwarderFactory is ForwarderFactoryBase, IOutboundForwarderFac
         return 1;
     }
 
+    /// @dev Single definition of the CREATE2 salt preimage. The encoding MUST stay byte-identical across every call
+    ///      site (predict/deploy) or the predicted-address invariant forks; centralizing it here removes that drift risk.
+    function _salt(address sender, uint32 destinationDomain, bytes32 mintRecipient) private pure returns (bytes32) {
+        return keccak256(abi.encode(sender, destinationDomain, mintRecipient));
+    }
+
     /// @inheritdoc IOutboundForwarderFactory
     function getForwarderAddress(address sender, uint32 destinationDomain, bytes32 mintRecipient)
         external
         view
         returns (address predicted)
     {
-        predicted = _predict(keccak256(abi.encode(sender, destinationDomain, mintRecipient)));
+        predicted = _predict(_salt(sender, destinationDomain, mintRecipient));
     }
 
     /// @inheritdoc IOutboundForwarderFactory
@@ -42,7 +48,7 @@ contract OutboundForwarderFactory is ForwarderFactoryBase, IOutboundForwarderFac
         view
         returns (bool)
     {
-        return _predict(keccak256(abi.encode(sender, destinationDomain, mintRecipient))).code.length != 0;
+        return _predict(_salt(sender, destinationDomain, mintRecipient)).code.length != 0;
     }
 
     /// @inheritdoc IOutboundForwarderFactory
@@ -53,7 +59,7 @@ contract OutboundForwarderFactory is ForwarderFactoryBase, IOutboundForwarderFac
         if (sender == address(0)) revert ZeroAddress();
         if (mintRecipient == bytes32(0)) revert EmptyMintRecipient();
 
-        bytes32 salt = keccak256(abi.encode(sender, destinationDomain, mintRecipient));
+        bytes32 salt = _salt(sender, destinationDomain, mintRecipient);
         address predicted = _predict(salt);
         if (predicted.code.length != 0) revert ForwarderAlreadyDeployed(predicted);
 

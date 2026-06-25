@@ -32,6 +32,9 @@ contract OutboundForwarder is Initializable {
     /// @notice Route identifier and fund owner / recovery recipient.
     address public sender;
     uint32 public destinationDomain;
+    // Intentionally `bool` (not the uint256 1/2 pattern InboundForwarder uses): it packs into slot 0 alongside
+    // sender + destinationDomain. Widening to uint256 would unpack it into its own slot and shift the proxy storage
+    // layout — forbidden under the Beacon upgrade model. Keep as bool.
     bool private _reentrant;
     bytes32 public mintRecipient;
 
@@ -150,11 +153,22 @@ contract OutboundForwarder is Initializable {
         emit TransferRequested(transferAmount, feeAmount, maxFee, minFinalityThreshold, destinationCaller);
     }
 
-    /// @notice operator-only escape hatch — recover the entire ERC20 balance to sender.
+    /// @notice operator-only escape hatch — recover the entire ERC20 balance to sender (default when no amount given).
     function recoverERC20(address token) external onlyOperator nonReentrant {
-        uint256 bal = IERC20(token).balanceOf(address(this));
-        IERC20(token).safeTransfer(sender, bal);
-        emit Recovered(token, bal);
+        _recover(token, IERC20(token).balanceOf(address(this)));
+    }
+
+    /// @notice Recover a specific `amount` of `token` to sender (partial). amount==0 reverts ZeroAmount; an amount
+    ///         exceeding the balance reverts inside safeTransfer.
+    function recoverERC20(address token, uint256 amount) external onlyOperator nonReentrant {
+        if (amount == 0) revert ZeroAmount();
+        _recover(token, amount);
+    }
+
+    /// @dev Shared recovery core: transfer to sender + emit Recovered.
+    function _recover(address token, uint256 amount) private {
+        IERC20(token).safeTransfer(sender, amount);
+        emit Recovered(token, amount);
     }
 
     /// @notice Reject direct native transfers; this forwarder only accepts ERC20 deposits.

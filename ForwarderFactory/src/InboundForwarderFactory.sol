@@ -28,13 +28,23 @@ contract InboundForwarderFactory is ForwarderFactoryBase, IInboundForwarderFacto
         return 1;
     }
 
+    /// @dev Single definition of the CREATE2 salt preimage. The encoding MUST stay byte-identical across every call
+    ///      site (predict/deploy) or the predicted-address invariant forks; centralizing it here removes that drift risk.
+    function _salt(address sender, string calldata destinationChainId, string calldata destinationReceiver)
+        private
+        pure
+        returns (bytes32)
+    {
+        return keccak256(abi.encode(sender, destinationChainId, destinationReceiver));
+    }
+
     /// @inheritdoc IInboundForwarderFactory
     function getForwarderAddress(
         address sender,
         string calldata destinationChainId,
         string calldata destinationReceiver
     ) external view returns (address predicted) {
-        predicted = _predict(keccak256(abi.encode(sender, destinationChainId, destinationReceiver)));
+        predicted = _predict(_salt(sender, destinationChainId, destinationReceiver));
     }
 
     /// @inheritdoc IInboundForwarderFactory
@@ -45,7 +55,7 @@ contract InboundForwarderFactory is ForwarderFactoryBase, IInboundForwarderFacto
         string calldata destinationChainId,
         string calldata destinationReceiver
     ) external view returns (bool) {
-        return _predict(keccak256(abi.encode(sender, destinationChainId, destinationReceiver))).code.length != 0;
+        return _predict(_salt(sender, destinationChainId, destinationReceiver)).code.length != 0;
     }
 
     /// @inheritdoc IInboundForwarderFactory
@@ -56,7 +66,7 @@ contract InboundForwarderFactory is ForwarderFactoryBase, IInboundForwarderFacto
         if (sender == address(0)) revert ZeroAddress();
         if (bytes(destinationChainId).length == 0 || bytes(destinationReceiver).length == 0) revert EmptyRoute();
 
-        bytes32 salt = keccak256(abi.encode(sender, destinationChainId, destinationReceiver));
+        bytes32 salt = _salt(sender, destinationChainId, destinationReceiver);
         address predicted = _predict(salt);
         if (predicted.code.length != 0) revert ForwarderAlreadyDeployed(predicted);
 

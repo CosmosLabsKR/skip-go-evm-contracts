@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
 import {Initializable} from "../lib/openzeppelin-contracts-upgradeable/contracts/proxy/utils/Initializable.sol";
@@ -19,6 +20,10 @@ contract CCTPV2Relayer is ICCTPV2Relayer, Initializable, UUPSUpgradeable, Ownabl
     IMessageTransmitter public transmitter;
     address public swapRouter;
     bool internal reentrant;
+
+    /// @dev The only CCTP v2 finality thresholds accepted by depositForBurn: fast/soft (1000) and standard/hard (2000).
+    uint32 internal constant FINALITY_FAST = 1000;
+    uint32 internal constant FINALITY_STANDARD = 2000;
 
     modifier nonReentrant() {
         if (reentrant) revert Reentrancy();
@@ -72,31 +77,18 @@ contract CCTPV2Relayer is ICCTPV2Relayer, Initializable, UUPSUpgradeable, Ownabl
         uint32 minFinalityThreshold,
         bytes calldata hookData
     ) external {
-        if (transferAmount == 0) revert PaymentCannotBeZero();
-        if (feeAmount == 0) revert PaymentCannotBeZero();
-        // CCTP v2 requires maxFee < amount (the fee is taken from the minted amount on the destination).
-        if (maxFee >= transferAmount) revert InvalidMaxFee();
-        // In order to save gas do the transfer only once, of both transfer amount and fee amount.
-        // Note: maxFee is NOT pulled here; it is deducted from the burned amount on the destination domain.
-        usdc.safeTransferFrom(msg.sender, address(this), transferAmount + feeAmount);
-
-        // Only give allowance of the transfer amount, as we want the fee amount to stay in the contract.
-        usdc.forceApprove(address(messenger), transferAmount);
-
-        // Call deposit for burn (v2). destinationCaller = bytes32(0) => any caller may receive.
-        _depositForBurn(
+        // destinationCaller = bytes32(0) => any caller may receive.
+        _requestForward(
             transferAmount,
             destinationDomain,
             mintRecipient,
             burnToken,
-            bytes32(0),
+            feeAmount,
             maxFee,
             minFinalityThreshold,
+            bytes32(0),
             hookData
         );
-
-        // v2 has no synchronous nonce; the off-chain relayer correlates via MessageSent in this tx.
-        emit PaymentForRelay(msg.sender, bytes32(0), feeAmount);
     }
 
     function requestCCTPTransferWithCaller(
@@ -110,16 +102,43 @@ contract CCTPV2Relayer is ICCTPV2Relayer, Initializable, UUPSUpgradeable, Ownabl
         bytes32 destinationCaller,
         bytes calldata hookData
     ) external {
+        _requestForward(
+            transferAmount,
+            destinationDomain,
+            mintRecipient,
+            burnToken,
+            feeAmount,
+            maxFee,
+            minFinalityThreshold,
+            destinationCaller,
+            hookData
+        );
+    }
+
+    /// @dev Shared core for both request* entry points: validate, pull (transfer + fee) once, approve the messenger
+    ///      for the transfer amount only, depositForBurn (v2), and emit. `destinationCaller` is the sole variable.
+    function _requestForward(
+        uint256 transferAmount,
+        uint32 destinationDomain,
+        bytes32 mintRecipient,
+        address burnToken,
+        uint256 feeAmount,
+        uint256 maxFee,
+        uint32 minFinalityThreshold,
+        bytes32 destinationCaller,
+        bytes calldata hookData
+    ) internal {
         if (transferAmount == 0) revert PaymentCannotBeZero();
         if (feeAmount == 0) revert PaymentCannotBeZero();
+        // CCTP v2 requires maxFee < amount (the fee is taken from the minted amount on the destination).
         if (maxFee >= transferAmount) revert InvalidMaxFee();
         // In order to save gas do the transfer only once, of both transfer amount and fee amount.
+        // Note: maxFee is NOT pulled here; it is deducted from the burned amount on the destination domain.
         usdc.safeTransferFrom(msg.sender, address(this), transferAmount + feeAmount);
 
         // Only give allowance of the transfer amount, as we want the fee amount to stay in the contract.
         usdc.forceApprove(address(messenger), transferAmount);
 
-        // Call deposit for burn (v2) with the explicit destination caller.
         _depositForBurn(
             transferAmount,
             destinationDomain,
@@ -138,7 +157,7 @@ contract CCTPV2Relayer is ICCTPV2Relayer, Initializable, UUPSUpgradeable, Ownabl
     function swapAndRequestCCTPTransfer(
         address inputToken,
         uint256 inputAmount,
-        bytes memory swapCalldata,
+        bytes calldata swapCalldata,
         uint32 destinationDomain,
         bytes32 mintRecipient,
         address burnToken,
@@ -147,99 +166,26 @@ contract CCTPV2Relayer is ICCTPV2Relayer, Initializable, UUPSUpgradeable, Ownabl
         uint32 minFinalityThreshold,
         bytes calldata hookData
     ) external payable nonReentrant {
-        if (inputAmount == 0) revert PaymentCannotBeZero();
-        if (feeAmount == 0) revert PaymentCannotBeZero();
-
-        uint256 outputAmount;
-        if (inputToken == address(0)) {
-            // Native Token
-            if (inputAmount != msg.value) revert InsufficientNativeToken();
-
-            // Get the contract's balances previous to the swap
-            uint256 preInputBalance = address(this).balance - inputAmount;
-            uint256 preOutputBalance = usdc.balanceOf(address(this));
-
-            // Call the swap router and perform the swap
-            (bool success,) = swapRouter.call{value: inputAmount}(swapCalldata);
-            if (!success) revert SwapFailed();
-
-            // Get the contract's balances after the swap
-            uint256 postInputBalance = address(this).balance;
-            uint256 postOutputBalance = usdc.balanceOf(address(this));
-
-            // Check that the contract's native token balance has increased
-            if (preOutputBalance >= postOutputBalance) revert InsufficientSwapOutput();
-            outputAmount = postOutputBalance - preOutputBalance;
-
-            // Refund the remaining ETH
-            uint256 dust = postInputBalance - preInputBalance;
-            if (dust != 0) {
-                (bool ethSuccess,) = msg.sender.call{value: dust}("");
-                if (!ethSuccess) revert ETHSendFailed();
-            }
-        } else {
-            IERC20 token = IERC20(inputToken);
-
-            // Get the contract's balances previous to the swap
-            uint256 preInputBalance = token.balanceOf(address(this));
-            uint256 preOutputBalance = usdc.balanceOf(address(this));
-
-            // Transfer input ERC20 tokens to the contract
-            token.safeTransferFrom(msg.sender, address(this), inputAmount);
-
-            // Approve the swap router to spend the input tokens
-            token.forceApprove(swapRouter, inputAmount);
-
-            // Call the swap router and perform the swap
-            (bool success,) = swapRouter.call(swapCalldata);
-            if (!success) revert SwapFailed();
-
-            // Get the contract's balances after the swap
-            uint256 postInputBalance = token.balanceOf(address(this));
-            uint256 postOutputBalance = usdc.balanceOf(address(this));
-
-            // Check that the contract's output token balance has increased
-            if (preOutputBalance >= postOutputBalance) revert InsufficientSwapOutput();
-            outputAmount = postOutputBalance - preOutputBalance;
-
-            // Refund the remaining amount
-            uint256 dust = postInputBalance - preInputBalance;
-            if (dust != 0) {
-                token.safeTransfer(msg.sender, dust);
-
-                // Revoke Approval
-                token.forceApprove(swapRouter, 0);
-            }
-        }
-
-        // Check that output amount is enough to cover the fee
-        if (outputAmount <= feeAmount) revert InsufficientSwapOutput();
-        uint256 transferAmount = outputAmount - feeAmount;
-        if (maxFee >= transferAmount) revert InvalidMaxFee();
-
-        // Only give allowance of the transfer amount, as we want the fee amount to stay in the contract.
-        usdc.forceApprove(address(messenger), transferAmount);
-
-        // Call deposit for burn (v2). destinationCaller = bytes32(0) => any caller may receive.
-        _depositForBurn(
-            transferAmount,
+        // destinationCaller = bytes32(0) => any caller may receive.
+        _swapAndForward(
+            inputToken,
+            inputAmount,
+            swapCalldata,
             destinationDomain,
             mintRecipient,
             burnToken,
-            bytes32(0),
+            feeAmount,
             maxFee,
             minFinalityThreshold,
+            bytes32(0),
             hookData
         );
-
-        // v2 has no synchronous nonce; the off-chain relayer correlates via MessageSent in this tx.
-        emit PaymentForRelay(msg.sender, bytes32(0), feeAmount);
     }
 
     function swapAndRequestCCTPTransferWithCaller(
         address inputToken,
         uint256 inputAmount,
-        bytes memory swapCalldata,
+        bytes calldata swapCalldata,
         uint32 destinationDomain,
         bytes32 mintRecipient,
         address burnToken,
@@ -249,32 +195,51 @@ contract CCTPV2Relayer is ICCTPV2Relayer, Initializable, UUPSUpgradeable, Ownabl
         bytes32 destinationCaller,
         bytes calldata hookData
     ) external payable nonReentrant {
-        if (inputAmount == 0) revert PaymentCannotBeZero();
-        if (feeAmount == 0) revert PaymentCannotBeZero();
+        _swapAndForward(
+            inputToken,
+            inputAmount,
+            swapCalldata,
+            destinationDomain,
+            mintRecipient,
+            burnToken,
+            feeAmount,
+            maxFee,
+            minFinalityThreshold,
+            destinationCaller,
+            hookData
+        );
+    }
 
-        uint256 outputAmount;
+    /// @dev Swaps `inputAmount` of `inputToken` (native when address(0), else ERC20) into USDC via swapRouter and
+    ///      returns the USDC output, measured as the contract's USDC balance delta (the router's return value is not
+    ///      trusted). Any leftover input (dust) is refunded to msg.sender; for ERC20 the router allowance is revoked.
+    function _executeSwap(address inputToken, uint256 inputAmount, bytes calldata swapCalldata)
+        internal
+        returns (uint256 outputAmount)
+    {
+        // Cache storage reads (usdc/swapRouter) to locals: each is read twice below, so this saves an SLOAD per swap.
+        IERC20 outputToken = usdc;
+        address router = swapRouter;
+        uint256 preOutputBalance = outputToken.balanceOf(address(this));
+
         if (inputToken == address(0)) {
             // Native Token
             if (inputAmount != msg.value) revert InsufficientNativeToken();
 
-            // Get the contract's balances previous to the swap
+            // Balance previous to the swap (subtract the value just received with this call).
             uint256 preInputBalance = address(this).balance - inputAmount;
-            uint256 preOutputBalance = usdc.balanceOf(address(this));
 
             // Call the swap router and perform the swap
-            (bool success,) = swapRouter.call{value: inputAmount}(swapCalldata);
+            (bool success,) = router.call{value: inputAmount}(swapCalldata);
             if (!success) revert SwapFailed();
 
-            // Get the contract's balances after the swap
-            uint256 postInputBalance = address(this).balance;
-            uint256 postOutputBalance = usdc.balanceOf(address(this));
-
-            // Check that the contract's native token balance has increased
+            // Check that the contract's USDC balance has increased
+            uint256 postOutputBalance = outputToken.balanceOf(address(this));
             if (preOutputBalance >= postOutputBalance) revert InsufficientSwapOutput();
             outputAmount = postOutputBalance - preOutputBalance;
 
             // Refund the remaining ETH
-            uint256 dust = postInputBalance - preInputBalance;
+            uint256 dust = address(this).balance - preInputBalance;
             if (dust != 0) {
                 (bool ethSuccess,) = msg.sender.call{value: dust}("");
                 if (!ethSuccess) revert ETHSendFailed();
@@ -282,37 +247,55 @@ contract CCTPV2Relayer is ICCTPV2Relayer, Initializable, UUPSUpgradeable, Ownabl
         } else {
             IERC20 token = IERC20(inputToken);
 
-            // Get the contract's balances previous to the swap
+            // Balance previous to the swap
             uint256 preInputBalance = token.balanceOf(address(this));
-            uint256 preOutputBalance = usdc.balanceOf(address(this));
 
             // Transfer input ERC20 tokens to the contract
             token.safeTransferFrom(msg.sender, address(this), inputAmount);
 
             // Approve the swap router to spend the input tokens
-            token.forceApprove(swapRouter, inputAmount);
+            token.forceApprove(router, inputAmount);
 
             // Call the swap router and perform the swap
-            (bool success,) = swapRouter.call(swapCalldata);
+            (bool success,) = router.call(swapCalldata);
             if (!success) revert SwapFailed();
 
-            // Get the contract's balances after the swap
-            uint256 postInputBalance = token.balanceOf(address(this));
-            uint256 postOutputBalance = usdc.balanceOf(address(this));
-
-            // Check that the contract's output token balance has increased
+            // Check that the contract's USDC balance has increased
+            uint256 postOutputBalance = outputToken.balanceOf(address(this));
             if (preOutputBalance >= postOutputBalance) revert InsufficientSwapOutput();
             outputAmount = postOutputBalance - preOutputBalance;
 
-            // Refund the remaining amount
-            uint256 dust = postInputBalance - preInputBalance;
+            // Refund the remaining input amount
+            uint256 dust = token.balanceOf(address(this)) - preInputBalance;
             if (dust != 0) {
                 token.safeTransfer(msg.sender, dust);
 
                 // Revoke Approval
-                token.forceApprove(swapRouter, 0);
+                token.forceApprove(router, 0);
             }
         }
+    }
+
+    /// @dev Shared core for both swap entry points: validate inputs, swap to USDC, deduct the fee, approve the
+    ///      messenger for the transfer amount only, depositForBurn (v2), and emit. `destinationCaller` is the sole
+    ///      variable between the two callers.
+    function _swapAndForward(
+        address inputToken,
+        uint256 inputAmount,
+        bytes calldata swapCalldata,
+        uint32 destinationDomain,
+        bytes32 mintRecipient,
+        address burnToken,
+        uint256 feeAmount,
+        uint256 maxFee,
+        uint32 minFinalityThreshold,
+        bytes32 destinationCaller,
+        bytes calldata hookData
+    ) internal {
+        if (inputAmount == 0) revert PaymentCannotBeZero();
+        if (feeAmount == 0) revert PaymentCannotBeZero();
+
+        uint256 outputAmount = _executeSwap(inputToken, inputAmount, swapCalldata);
 
         // Check that output amount is enough to cover the fee
         if (outputAmount <= feeAmount) revert InsufficientSwapOutput();
@@ -322,7 +305,6 @@ contract CCTPV2Relayer is ICCTPV2Relayer, Initializable, UUPSUpgradeable, Ownabl
         // Only give allowance of the transfer amount, as we want the fee amount to stay in the contract.
         usdc.forceApprove(address(messenger), transferAmount);
 
-        // Call deposit for burn (v2) with the explicit destination caller.
         _depositForBurn(
             transferAmount,
             destinationDomain,
@@ -380,7 +362,9 @@ contract CCTPV2Relayer is ICCTPV2Relayer, Initializable, UUPSUpgradeable, Ownabl
         bytes calldata hookData
     ) internal {
         // Only CCTP v2 standard finality values are allowed: 1000 (fast/soft) or 2000 (standard/hard).
-        if (minFinalityThreshold != 1000 && minFinalityThreshold != 2000) revert InvalidFinalityThreshold();
+        if (minFinalityThreshold != FINALITY_FAST && minFinalityThreshold != FINALITY_STANDARD) {
+            revert InvalidFinalityThreshold();
+        }
         if (hookData.length > 0) {
             messenger.depositForBurnWithHook(
                 amount,

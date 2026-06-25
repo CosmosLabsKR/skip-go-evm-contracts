@@ -122,9 +122,23 @@ contract InboundForwarder is IInboundForwarder, Initializable {
     /// @notice Recover funds that returned to this forwarder after a downstream IBC failure (timeout/error-ack).
     ///         The IBC refund arrives as a bank coin that is ERC20-paired on Injective, so it is recoverable here
     ///         as USDC (see design G5). Unrelated to any CCTP message, so sourceNonce is unknown (0).
+    /// @dev Refund the entire held USDC balance. Reverts ZeroAmount when there is nothing to refund — keeps the
+    ///      event meaningful and stays consistent with refund(0) reverting.
+    function refund() external onlyOperator nonReentrant {
+        uint256 bal = usdc.balanceOf(address(this));
+        if (bal == 0) revert ZeroAmount();
+        _refund(bal);
+    }
+
+    /// @notice Refund a specific amount (existing behavior — signature/reverts/event unchanged).
     function refund(uint256 amount) external onlyOperator nonReentrant {
         if (amount == 0) revert ZeroAmount();
         if (usdc.balanceOf(address(this)) < amount) revert MissingBalance();
+        _refund(amount);
+    }
+
+    /// @dev Shared refund core: transfer to refundRecipient + emit Refunded. Prevents drift between the two entry points.
+    function _refund(uint256 amount) private {
         address to = refundRecipient;
         usdc.safeTransfer(to, amount);
         emit Refunded(bytes32(0), to, amount, RefundKind.PostRoute);
@@ -173,16 +187,21 @@ contract InboundForwarder is IInboundForwarder, Initializable {
     }
 
     /// @dev Lowercase, 0x-prefixed hex of `data` (matches the IRIS hookData hex representation). Empty → "0x".
+    ///      Intentionally separate from _erc20Denom's hex rendering: this is plain lowercase (memo passthrough),
+    ///      whereas _erc20Denom applies the EIP-55 mixed-case checksum required by case-sensitive Injective denoms.
     function _bytesToHexString(bytes memory data) private pure returns (string memory) {
         bytes16 hexSymbols = "0123456789abcdef";
         uint256 n = data.length;
         bytes memory out = new bytes(2 + n * 2);
         out[0] = "0";
         out[1] = "x";
-        for (uint256 i = 0; i < n; i++) {
+        for (uint256 i = 0; i < n;) {
             uint8 b = uint8(data[i]);
             out[2 + i * 2] = hexSymbols[b >> 4];
             out[3 + i * 2] = hexSymbols[b & 0x0f];
+            unchecked {
+                ++i;
+            }
         }
         return string(out);
     }
@@ -205,17 +224,23 @@ contract InboundForwarder is IInboundForwarder, Initializable {
         bytes memory hexStr = bytes(Strings.toHexString(token)); // "0x" + 40 lowercase hex chars
         // EIP-55 hashes the 40 lowercase hex chars (without the "0x"). Copy them out to hash, then fix case in place.
         bytes memory lower40 = new bytes(40);
-        for (uint256 i = 0; i < 40; i++) {
+        for (uint256 i = 0; i < 40;) {
             lower40[i] = hexStr[2 + i];
+            unchecked {
+                ++i;
+            }
         }
         bytes32 hash = keccak256(lower40);
-        for (uint256 i = 0; i < 40; i++) {
+        for (uint256 i = 0; i < 40;) {
             uint8 c = uint8(lower40[i]);
             if (c >= 0x61 && c <= 0x66) {
                 // 'a'..'f': uppercase when the matching hash nibble >= 8 (EIP-55)
                 uint8 hashByte = uint8(hash[i / 2]);
                 uint8 nibble = (i % 2 == 0) ? (hashByte >> 4) : (hashByte & 0x0f);
                 if (nibble >= 8) hexStr[2 + i] = bytes1(c - 0x20);
+            }
+            unchecked {
+                ++i;
             }
         }
         return string.concat("erc20:", string(hexStr));

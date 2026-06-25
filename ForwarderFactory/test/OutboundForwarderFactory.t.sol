@@ -566,6 +566,35 @@ contract OutboundForwarderFactoryTest is Test {
         assertEq(usdc.balanceOf(address(f)), 0);
     }
 
+    // TC-20b: recoverERC20(token, amount) — partial recovery
+    function test_TC20b_RecoverERC20Partial() public {
+        OutboundForwarder f = _deployFunded(1000e6);
+
+        // operator-only
+        vm.prank(address(0xDEAD));
+        vm.expectRevert(OutboundForwarder.NotOperator.selector);
+        f.recoverERC20(address(usdc), 400e6);
+
+        // amount == 0 reverts ZeroAmount
+        vm.prank(operator);
+        vm.expectRevert(OutboundForwarder.ZeroAmount.selector);
+        f.recoverERC20(address(usdc), 0);
+
+        // partial: 400e6 to sender, 600e6 remains
+        vm.prank(operator);
+        f.recoverERC20(address(usdc), 400e6);
+        assertEq(usdc.balanceOf(sender), 400e6);
+        assertEq(usdc.balanceOf(address(f)), 600e6);
+    }
+
+    // TC-20c: recoverERC20(token, amount) exceeding balance reverts (safeTransfer)
+    function test_TC20c_RecoverERC20PartialExceedsBalance() public {
+        OutboundForwarder f = _deployFunded(100e6);
+        vm.prank(operator);
+        vm.expectRevert();
+        f.recoverERC20(address(usdc), 100e6 + 1);
+    }
+
     // TC-21: direct native transfers are rejected
     function test_TC21_ReceiveRejectsNativeTransfer() public {
         OutboundForwarder f = OutboundForwarder(payable(factory.createForwarder(sender, destDomain, mintRecipient)));
