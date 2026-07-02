@@ -53,10 +53,10 @@ contract BaseScript is Script {
             usdc = USDC_BASE_SEPOLIA;
             messenger = MESSENGER_BASE_SEPOLIA;
             transmitter = TRANSMITTER_BASE_SEPOLIA;
-        } else if (block.chainid == CHAIN_POLYGON_MUMBAI) {
-            usdc = USDC_POLYGON_MUMBAI;
-            messenger = MESSENGER_POLYGON_MUMBAI;
-            transmitter = TRANSMITTER_POLYGON_MUMBAI;
+        } else if (block.chainid == CHAIN_POLYGON_AMOY) {
+            usdc = USDC_POLYGON_AMOY;
+            messenger = MESSENGER_POLYGON_AMOY;
+            transmitter = TRANSMITTER_POLYGON_AMOY;
         } else if (block.chainid == CHAIN_INJECTIVE) {
             usdc = USDC_INJECTIVE;
             messenger = MESSENGER_INJECTIVE;
