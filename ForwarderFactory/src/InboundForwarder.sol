@@ -171,18 +171,24 @@ contract InboundForwarder is IInboundForwarder, Initializable {
         if (message._getMessageSender() != _toBytes32(sender)) revert WrongSender();
     }
 
-    /// @dev Decode the attestation-backed hookData into the per-transfer IBC route (D-2/D-3). Schema is
-    ///      abi.encode(string channelId, string receiver, bytes memo): channelId = source IBC channel for the onward
-    ///      MsgTransfer, receiver = next-hop recipient (an intermediate in multi-hop/PFM — generally NOT
-    ///      destinationReceiver), memo = forward/PFM payload. Reverts EmptyHookRoute if channel or receiver is empty;
-    ///      a non-decodable tail reverts inside abi.decode (whole tx reverts → mint rolls back). hookData is
-    ///      attestation-backed, so the operator cannot forge these (D-22 ③); timeout is computed on-chain, not read here.
+    /// @dev Decode the attestation-backed hookData into the per-transfer IBC route (D-2/D-3). Schema is an envelope
+    ///      abi.encode(address relayer, bytes inner) whose inner is abi.encode(string channelId, string receiver,
+    ///      bytes memo): channelId = source IBC channel for the onward MsgTransfer, receiver = next-hop recipient
+    ///      (an intermediate in multi-hop/PFM — generally NOT destinationReceiver), memo = forward/PFM payload.
+    ///      `relayer` is a discovery tag for the off-chain transfer monitor (which filters CCTP burns by this address
+    ///      because destinationCaller is the per-transfer forwarder address, not the relayer EOA). On-chain it is
+    ///      read but intentionally ignored — never used, validated, or stored. Reverts EmptyHookRoute if channel or
+    ///      receiver is empty; a non-decodable envelope or inner tail reverts inside abi.decode (whole tx reverts →
+    ///      mint rolls back). hookData is attestation-backed, so the operator cannot forge these (D-22 ③); timeout is
+    ///      computed on-chain, not read here.
     function _decodeHook(bytes calldata hookData)
         internal
         pure
         returns (string memory channelId, string memory receiver, bytes memory memo)
     {
-        (channelId, receiver, memo) = abi.decode(hookData, (string, string, bytes));
+        // Strip the discovery envelope; relayer is monitor-only and deliberately dropped here.
+        (, bytes memory inner) = abi.decode(hookData, (address, bytes));
+        (channelId, receiver, memo) = abi.decode(inner, (string, string, bytes));
         if (bytes(channelId).length == 0 || bytes(receiver).length == 0) revert EmptyHookRoute();
     }
 

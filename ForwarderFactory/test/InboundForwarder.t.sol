@@ -74,6 +74,10 @@ contract InboundForwarderTest is Test {
     string hookChannelId = "channel-126";
     string hookReceiver = "inj1nexthopxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
 
+    // hookData envelope discovery tag (= CCTP_RELAYER_ADDRESS, injected by cctpd). On-chain it is read but
+    // deliberately ignored — never used, validated, or stored — so its value never affects routing.
+    address constant RELAYER_TAG = address(0xC0FFEE);
+
     // canonical event (must match injective-event/src/IBCTransferEmitter.sol)
     event IBCTransferRequested(
         string sourcePort,
@@ -103,13 +107,28 @@ contract InboundForwarderTest is Test {
 
     // ── helpers ──
 
-    /// @dev hookData schema (D-3): abi.encode(string channelId, string receiver, bytes memo).
-    function _hook(string memory channelId, string memory receiver, bytes memory memo)
+    /// @dev inner route payload: abi.encode(string channelId, string receiver, bytes memo).
+    function _innerHook(string memory channelId, string memory receiver, bytes memory memo)
         internal
         pure
         returns (bytes memory)
     {
         return abi.encode(channelId, receiver, memo);
+    }
+
+    /// @dev hookData envelope (D-3): abi.encode(address relayer, bytes inner). relayer is a monitor-only discovery
+    ///      tag ignored on-chain; wraps the canonical RELAYER_TAG so existing cases exercise the envelope path.
+    function _hook(string memory channelId, string memory receiver, bytes memory memo)
+        internal
+        pure
+        returns (bytes memory)
+    {
+        return _envelope(RELAYER_TAG, _innerHook(channelId, receiver, memo));
+    }
+
+    /// @dev Wrap an inner route payload with an explicit relayer discovery tag.
+    function _envelope(address relayer, bytes memory inner) internal pure returns (bytes memory) {
+        return abi.encode(relayer, inner);
     }
 
     /// @dev Well-formed hookData with the canonical next-hop route and the given memo.
@@ -299,12 +318,54 @@ contract InboundForwarderTest is Test {
         fwd.mintAndRoute(message, "");
     }
 
-    // ── Malformed hookData (not abi.encode(string,string,bytes)) → abi.decode reverts → whole tx reverts ──
+    // ── Malformed hookData (neither the envelope nor the inner tail decodes) → abi.decode reverts → whole tx reverts ──
     function test_MintAndRoute_RevertsOnMalformedHookData() public {
         bytes memory message = _goodMessage(1_000_000, hex"deadbeef", keccak256("mal"));
         vm.prank(operator);
         vm.expectRevert(); // low-level abi.decode revert (no named selector)
         fwd.mintAndRoute(message, "");
+    }
+
+    // ── Envelope: hookData wrapped as abi.encode(address relayer, bytes inner) decodes to the inner route ──
+    //    Vector mirrors the cctpd encoder: inner = f(string,string,bytes) "channel-01"/"inj1recv"/0x, then f(address,bytes).
+    function test_MintAndRoute_EnvelopeDecodesInnerRoute() public {
+        uint256 amount = 1_000_000;
+        bytes memory memo = bytes(""); // 0x
+        bytes memory inner = _innerHook("channel-01", "inj1recv", memo);
+        bytes memory hookData = _envelope(RELAYER_TAG, inner);
+        bytes memory message = _goodMessage(amount, hookData, keccak256("env"));
+
+        vm.expectEmit(true, true, true, true, address(fwd));
+        emit IBCTransferRequested(
+            "transfer", "channel-01", fwd.DENOM(), amount, address(fwd), "inj1recv", _hex(memo), _expectedTimeout()
+        );
+        vm.prank(operator);
+        fwd.mintAndRoute(message, "");
+    }
+
+    // ── relayer tag is discovery-only: two different relayer addresses over the same inner route emit identical events ──
+    function test_MintAndRoute_IgnoresRelayerTag() public {
+        uint256 amount = 1_000_000;
+        bytes memory memo = hex"beef";
+        bytes memory inner = _innerHook(hookChannelId, hookReceiver, memo);
+
+        // relayer #1
+        bytes memory msg1 = _goodMessage(amount, _envelope(address(0x1111), inner), keccak256("rly1"));
+        vm.expectEmit(true, true, true, true, address(fwd));
+        emit IBCTransferRequested(
+            "transfer", hookChannelId, fwd.DENOM(), amount, address(fwd), hookReceiver, _hex(memo), _expectedTimeout()
+        );
+        vm.prank(operator);
+        fwd.mintAndRoute(msg1, "");
+
+        // relayer #2 (different address, same inner) → identical routing, unaffected by the tag
+        bytes memory msg2 = _goodMessage(amount, _envelope(address(0x2222), inner), keccak256("rly2"));
+        vm.expectEmit(true, true, true, true, address(fwd));
+        emit IBCTransferRequested(
+            "transfer", hookChannelId, fwd.DENOM(), amount, address(fwd), hookReceiver, _hex(memo), _expectedTimeout()
+        );
+        vm.prank(operator);
+        fwd.mintAndRoute(msg2, "");
     }
 
     // ── Event ABI must equal the canonical IBCTransferEmitter listener ABI ──
