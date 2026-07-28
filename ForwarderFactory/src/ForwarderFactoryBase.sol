@@ -4,6 +4,7 @@ pragma solidity ^0.8.20;
 import {Initializable} from "openzeppelin-contracts-upgradeable/proxy/utils/Initializable.sol";
 import {Ownable2StepUpgradeable} from "openzeppelin-contracts-upgradeable/access/Ownable2StepUpgradeable.sol";
 import {UUPSUpgradeable} from "openzeppelin-contracts/proxy/utils/UUPSUpgradeable.sol";
+import {Address} from "openzeppelin-contracts/utils/Address.sol";
 import {Create2} from "openzeppelin-contracts/utils/Create2.sol";
 import {UpgradeableBeacon} from "openzeppelin-contracts/proxy/beacon/UpgradeableBeacon.sol";
 import {BeaconProxy} from "openzeppelin-contracts/proxy/beacon/BeaconProxy.sol";
@@ -83,13 +84,8 @@ abstract contract ForwarderFactoryBase is Initializable, UUPSUpgradeable, Ownabl
         forwarder = address(new BeaconProxy{salt: salt}(beacon, ""));
         if (forwarder != predicted) revert AddressMismatch();
 
-        (bool ok, bytes memory ret) = forwarder.call(initData);
-        if (!ok) {
-            // Bubble the forwarder's revert reason, matching the prior typed-call behavior.
-            assembly {
-                revert(add(ret, 0x20), mload(ret))
-            }
-        }
+        // Bubbles the forwarder's revert reason on failure (FailedInnerCall when it reverted without data).
+        Address.functionCall(forwarder, initData);
     }
 
     /// @dev Swap the beacon impl to upgrade all deployed forwarders' logic (and immutables) in bulk. The concrete

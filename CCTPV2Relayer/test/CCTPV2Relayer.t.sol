@@ -52,6 +52,12 @@ contract CCTPV2RelayerTest is Test {
         return bytes32(uint256(uint160(ACTOR_1)));
     }
 
+    /// @dev version() must be readable through the proxy — that is the point of it (confirming which
+    ///      implementation is live). Reading it off the impl directly would not prove that.
+    function test_version() public {
+        assertEq(relayer.version(), 1, "initial implementation revision");
+    }
+
     // --------------------------------------------------------------------- //
     //                          makePaymentForRelay                          //
     // --------------------------------------------------------------------- //

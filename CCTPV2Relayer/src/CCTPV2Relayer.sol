@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import {Initializable} from "../lib/openzeppelin-contracts-upgradeable/contracts/proxy/utils/Initializable.sol";
+import {Initializable} from "openzeppelin-contracts-upgradeable/proxy/utils/Initializable.sol";
 import {Ownable2StepUpgradeable} from "openzeppelin-contracts-upgradeable/access/Ownable2StepUpgradeable.sol";
-import {UUPSUpgradeable} from "openzeppelin-contracts/proxy/utils/UUPSUpgradeable.sol";
+import {UUPSUpgradeable} from "openzeppelin-contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 
 import {ICCTPV2Relayer} from "./interfaces/ICCTPV2Relayer.sol";
 import {ITokenMessenger} from "./interfaces/ITokenMessenger.sol";
@@ -25,6 +25,10 @@ contract CCTPV2Relayer is ICCTPV2Relayer, Initializable, UUPSUpgradeable, Ownabl
     uint32 internal constant FINALITY_FAST = 1000;
     uint32 internal constant FINALITY_STANDARD = 2000;
 
+    /// @dev Must stay on EVERY entry point that moves this contract's USDC, not just the swap paths. `_executeSwap`
+    ///      measures swap output as a balance delta across `router.call` and `swapCalldata` is caller-supplied, so an
+    ///      aggregator-style router can be pointed back here — any unguarded balance move inside that window is
+    ///      credited as swap output and bridged to the caller.
     modifier nonReentrant() {
         if (reentrant) revert Reentrancy();
         reentrant = true;
@@ -37,6 +41,7 @@ contract CCTPV2Relayer is ICCTPV2Relayer, Initializable, UUPSUpgradeable, Ownabl
     }
 
     function initialize(address usdc_, address messenger_, address transmitter_) external initializer {
+        __UUPSUpgradeable_init();
         __Ownable2Step_init();
 
         if (usdc_ == address(0)) revert ZeroAddress();
@@ -50,20 +55,27 @@ contract CCTPV2Relayer is ICCTPV2Relayer, Initializable, UUPSUpgradeable, Ownabl
         _transferOwnership(msg.sender);
     }
 
+    /// @notice Implementation revision behind this proxy; bump on every upgrade that changes behaviour.
+    /// @dev Lets an operator confirm on-chain which implementation is live. `virtual` so the next impl overrides it.
+    function version() external pure virtual returns (uint256) {
+        return 1;
+    }
+
     function setSwapRouter(address _swapRouter) external onlyOwner {
         if (_swapRouter == address(0)) revert ZeroAddress();
 
+        address previousRouter = swapRouter;
         swapRouter = _swapRouter;
+
+        emit SwapRouterUpdated(previousRouter, _swapRouter);
     }
 
     /// @notice Pays a relayer-service fee for an already-dispatched CCTP v2 message.
     /// @param messageHash keccak256 of the v2 message bytes (from the MessageSent event), computed off-chain.
-    function makePaymentForRelay(bytes32 messageHash, uint256 paymentAmount) external {
+    function makePaymentForRelay(bytes32 messageHash, uint256 paymentAmount) external nonReentrant {
         if (paymentAmount == 0) revert PaymentCannotBeZero();
-        // Transfer the funds from the user into the contract.
         usdc.safeTransferFrom(msg.sender, address(this), paymentAmount);
 
-        // If the transfer succeeds, emit the payment event.
         emit PaymentForRelay(msg.sender, messageHash, paymentAmount);
     }
 
@@ -76,7 +88,7 @@ contract CCTPV2Relayer is ICCTPV2Relayer, Initializable, UUPSUpgradeable, Ownabl
         uint256 maxFee,
         uint32 minFinalityThreshold,
         bytes calldata hookData
-    ) external {
+    ) external nonReentrant {
         // destinationCaller = bytes32(0) => any caller may receive.
         _requestForward(
             transferAmount,
@@ -101,7 +113,7 @@ contract CCTPV2Relayer is ICCTPV2Relayer, Initializable, UUPSUpgradeable, Ownabl
         uint32 minFinalityThreshold,
         bytes32 destinationCaller,
         bytes calldata hookData
-    ) external {
+    ) external nonReentrant {
         _requestForward(
             transferAmount,
             destinationDomain,
@@ -212,15 +224,19 @@ contract CCTPV2Relayer is ICCTPV2Relayer, Initializable, UUPSUpgradeable, Ownabl
 
     /// @dev Swaps `inputAmount` of `inputToken` (native when address(0), else ERC20) into USDC via swapRouter and
     ///      returns the USDC output, measured as the contract's USDC balance delta (the router's return value is not
-    ///      trusted). Any leftover input (dust) is refunded to msg.sender; for ERC20 the router allowance is revoked.
+    ///      trusted). `inputToken` may not be USDC. Leftover input is refunded to msg.sender; for ERC20 the router
+    ///      allowance is always closed afterwards.
     function _executeSwap(address inputToken, uint256 inputAmount, bytes calldata swapCalldata)
         internal
         returns (uint256 outputAmount)
     {
-        // Cache storage reads (usdc/swapRouter) to locals: each is read twice below, so this saves an SLOAD per swap.
+        // Cache the storage reads used repeatedly below.
         IERC20 outputToken = usdc;
         address router = swapRouter;
-        uint256 preOutputBalance = outputToken.balanceOf(address(this));
+
+        // The balance delta only measures the swap if the input cannot move the output balance itself: with
+        // inputToken == usdc the caller's deposit would count as output AND be refunded as dust, draining the reserve.
+        if (inputToken == address(outputToken)) revert InvalidInputToken();
 
         if (inputToken == address(0)) {
             // Native Token
@@ -228,6 +244,9 @@ contract CCTPV2Relayer is ICCTPV2Relayer, Initializable, UUPSUpgradeable, Ownabl
 
             // Balance previous to the swap (subtract the value just received with this call).
             uint256 preInputBalance = address(this).balance - inputAmount;
+
+            // Snapshot the output balance immediately before the swap, so the delta below covers the swap only.
+            uint256 preOutputBalance = outputToken.balanceOf(address(this));
 
             // Call the swap router and perform the swap
             (bool success,) = router.call{value: inputAmount}(swapCalldata);
@@ -247,7 +266,8 @@ contract CCTPV2Relayer is ICCTPV2Relayer, Initializable, UUPSUpgradeable, Ownabl
         } else {
             IERC20 token = IERC20(inputToken);
 
-            // Balance previous to the swap
+            // Balance previous to the swap: pre-existing holdings only, so `dust` below is the unconsumed
+            // part of `inputAmount` and never touches tokens the contract already held.
             uint256 preInputBalance = token.balanceOf(address(this));
 
             // Transfer input ERC20 tokens to the contract
@@ -255,6 +275,10 @@ contract CCTPV2Relayer is ICCTPV2Relayer, Initializable, UUPSUpgradeable, Ownabl
 
             // Approve the swap router to spend the input tokens
             token.forceApprove(router, inputAmount);
+
+            // Snapshot the output balance after the input has been pulled in and immediately before the swap,
+            // so the delta below covers the swap only and never the caller's own deposit.
+            uint256 preOutputBalance = outputToken.balanceOf(address(this));
 
             // Call the swap router and perform the swap
             (bool success,) = router.call(swapCalldata);
@@ -269,10 +293,12 @@ contract CCTPV2Relayer is ICCTPV2Relayer, Initializable, UUPSUpgradeable, Ownabl
             uint256 dust = token.balanceOf(address(this)) - preInputBalance;
             if (dust != 0) {
                 token.safeTransfer(msg.sender, dust);
-
-                // Revoke Approval
-                token.forceApprove(router, 0);
             }
+
+            // Always close the router allowance: `dust` is a balance delta and says nothing about how much allowance
+            // the router consumed. A router sourcing the input elsewhere (Permit2, own inventory) can leave dust == 0
+            // with the approval still standing, and `swapCalldata` is caller-supplied — close it rather than infer.
+            token.forceApprove(router, 0);
         }
     }
 
@@ -320,32 +346,30 @@ contract CCTPV2Relayer is ICCTPV2Relayer, Initializable, UUPSUpgradeable, Ownabl
         emit PaymentForRelay(msg.sender, bytes32(0), feeAmount);
     }
 
-    function batchReceiveMessage(ICCTPV2Relayer.ReceiveCall[] memory receiveCalls) external {
-        // Save gas by not retrieving the length on each loop.
+    /// @dev `calldata` (not `memory`) so the blobs are read in place rather than memcopied on entry and again per
+    ///      iteration. Same selector, so the external ABI is unchanged.
+    function batchReceiveMessage(ICCTPV2Relayer.ReceiveCall[] calldata receiveCalls) external nonReentrant {
         uint256 length = receiveCalls.length;
 
-        for (uint256 i; i < length;) {
-            // Save the message and the attestation.
-            bytes memory message = receiveCalls[i].message;
-            bytes memory attestation = receiveCalls[i].attestation;
+        for (uint256 i; i < length; ++i) {
+            bytes calldata message = receiveCalls[i].message;
+            bytes calldata attestation = receiveCalls[i].attestation;
 
-            // Call the transmitter, if fails, emit the event, otherwise skip to the next pair in the array.
+            // Only a `false` return is tolerated and skipped. A transmitter revert (replayed nonce, bad attestation)
+            // still reverts the whole batch — wrap in try/catch if per-item isolation is ever needed.
             if (!transmitter.receiveMessage(message, attestation)) {
                 emit FailedReceiveMessage(message, attestation);
-            }
-
-            unchecked {
-                ++i;
             }
         }
     }
 
-    function withdraw(address receiver, uint256 amount) external onlyOwner {
-        // Check that the contract has enough balance.
+    function withdraw(address receiver, uint256 amount) external onlyOwner nonReentrant {
+        if (receiver == address(0)) revert ZeroAddress();
         if (usdc.balanceOf(address(this)) < amount) revert MissingBalance();
 
-        // Transfer the amount to the receiver.
         usdc.safeTransfer(receiver, amount);
+
+        emit Withdrawn(receiver, amount);
     }
 
     /// @dev Routes the burn to the CCTP v2 messenger: when `hookData` is non-empty it uses
@@ -383,8 +407,8 @@ contract CCTPV2Relayer is ICCTPV2Relayer, Initializable, UUPSUpgradeable, Ownabl
         }
     }
 
-    fallback() external payable {}
-
+    /// @dev Required by the native swap path: the router refunds unspent ETH here and `_executeSwap` accounts for it
+    ///      as dust. Do not drop it alongside `fallback()` — native swaps with a refund would revert.
     receive() external payable {}
 
     function _authorizeUpgrade(address newImplementation) internal override onlyOwner {}

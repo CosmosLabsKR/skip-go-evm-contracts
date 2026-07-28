@@ -164,6 +164,11 @@ contract InboundForwarder is IInboundForwarder, Initializable {
     ///      destinationChainId, destinationReceiver)) is what commits the final intent. The per-transfer IBC route
     ///      (channelId/receiver) is NOT bound here — it rides in hookData (D-1 pure-trust). sourceDomain is excluded
     ///      from the key (D-19).
+    ///
+    ///      ⚠️ Do NOT add a `burnToken == usdc` check here: the burn body's `burnToken` is a SOURCE-domain address
+    ///      (Ethereum/Base/Arbitrum USDC all differ), so comparing it to this chain's `usdc` would reject every
+    ///      legitimate message. Token identity is enforced downstream instead — `_receiveAndValidate` reverts
+    ///      NothingMinted unless THIS chain's `usdc` balance actually grew, which is the stronger check.
     function _validateBinding(bytes calldata message) internal view {
         message.validateLength();
         if (message._getDestinationDomain() != INJECTIVE_DOMAIN) revert WrongDestination();
@@ -217,10 +222,10 @@ contract InboundForwarder is IInboundForwarder, Initializable {
     }
 
     /// @notice Injective bank denom of the minted USDC: `erc20:<EIP-55 checksummed usdc address>`.
-    /// @dev Derived from the immutable `usdc` (readable through the BeaconProxy delegatecall) rather than stored,
-    ///      so it is provably the same token validated in _validateBinding (burnToken == usdc) and cannot be
-    ///      misconfigured. A view (not immutable) because Solidity has no immutable strings and a constructor-set
-    ///      storage string would live in the impl, invisible through the proxy.
+    /// @dev Derived from the immutable `usdc` (readable through the BeaconProxy delegatecall) rather than stored, so
+    ///      it is provably the token whose balance delta `_receiveAndValidate` measured as `minted`. (Not tied to the
+    ///      burn body's `burnToken`, a source-domain address — see _validateBinding.) A view because Solidity has no
+    ///      immutable strings and a constructor-set storage string would live in the impl, invisible through the proxy.
     function DENOM() public view returns (string memory) {
         return _erc20Denom(address(usdc));
     }

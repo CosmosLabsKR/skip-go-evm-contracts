@@ -17,6 +17,7 @@ interface ICCTPV2Relayer {
     error Reentrancy();
     error InvalidMaxFee();
     error InvalidFinalityThreshold(); // minFinalityThreshold must be 1000 (fast) or 2000 (standard)
+    error InvalidInputToken(); // the swap input token must not be the output token (USDC)
 
     /**
      * @notice Emitted when a relayer-service fee is paid.
@@ -30,6 +31,14 @@ interface ICCTPV2Relayer {
     event PaymentForRelay(address indexed payer, bytes32 indexed messageHash, uint256 paymentAmount);
 
     event FailedReceiveMessage(bytes message, bytes attestation);
+
+    /// @notice Emitted when the owner repoints the swap router.
+    /// @dev The router receives caller-supplied calldata and a live allowance on the swap input, so a change here
+    ///      moves the trust boundary. Carries the previous value so an off-chain monitor can alert on the transition.
+    event SwapRouterUpdated(address indexed previousRouter, address indexed newRouter);
+
+    /// @notice Emitted when the owner withdraws accrued relay fees.
+    event Withdrawn(address indexed receiver, uint256 amount);
 
     struct ReceiveCall {
         bytes message;
