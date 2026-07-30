@@ -206,13 +206,10 @@ contract InboundForwarder is IInboundForwarder, Initializable {
         bytes memory out = new bytes(2 + n * 2);
         out[0] = "0";
         out[1] = "x";
-        for (uint256 i = 0; i < n;) {
+        for (uint256 i = 0; i < n; ++i) {
             uint8 b = uint8(data[i]);
             out[2 + i * 2] = hexSymbols[b >> 4];
             out[3 + i * 2] = hexSymbols[b & 0x0f];
-            unchecked {
-                ++i;
-            }
         }
         return string(out);
     }
@@ -235,23 +232,17 @@ contract InboundForwarder is IInboundForwarder, Initializable {
         bytes memory hexStr = bytes(Strings.toHexString(token)); // "0x" + 40 lowercase hex chars
         // EIP-55 hashes the 40 lowercase hex chars (without the "0x"). Copy them out to hash, then fix case in place.
         bytes memory lower40 = new bytes(40);
-        for (uint256 i = 0; i < 40;) {
+        for (uint256 i = 0; i < 40; ++i) {
             lower40[i] = hexStr[2 + i];
-            unchecked {
-                ++i;
-            }
         }
         bytes32 hash = keccak256(lower40);
-        for (uint256 i = 0; i < 40;) {
+        for (uint256 i = 0; i < 40; ++i) {
             uint8 c = uint8(lower40[i]);
             if (c >= 0x61 && c <= 0x66) {
                 // 'a'..'f': uppercase when the matching hash nibble >= 8 (EIP-55)
                 uint8 hashByte = uint8(hash[i / 2]);
                 uint8 nibble = (i % 2 == 0) ? (hashByte >> 4) : (hashByte & 0x0f);
                 if (nibble >= 8) hexStr[2 + i] = bytes1(c - 0x20);
-            }
-            unchecked {
-                ++i;
             }
         }
         return string.concat("erc20:", string(hexStr));
