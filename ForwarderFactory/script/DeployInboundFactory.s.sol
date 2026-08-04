@@ -7,7 +7,12 @@ import {ERC1967Proxy} from "openzeppelin-contracts/proxy/ERC1967/ERC1967Proxy.so
 import {InboundForwarderFactory} from "../src/InboundForwarderFactory.sol";
 import {InboundForwarder} from "../src/InboundForwarder.sol";
 
-contract InboundDeploymentScript is BaseScript {
+/**
+ * @notice Deploys the InboundForwarderFactory (impl + ERC1967 proxy). The InboundForwarder impl is deployed first
+ *         only because the factory's `initialize` needs it — the factory owns the beacon it creates from that impl.
+ *         Per-route forwarders are NOT deployed here; use CreateInboundForwarder.
+ */
+contract DeployInboundFactoryScript is BaseScript {
     function run() public {
         vm.startBroadcast();
 

@@ -36,13 +36,13 @@ contract BaseScript is Script {
     }
 
     /// @dev Deploy a new OutboundForwarder beacon impl from USDC/PAYMENT_CONTRACT/OPERATOR.
-    ///      Call within a broadcast context. (Shared by Deployment / UpgradeOutboundForwarder)
+    ///      Call within a broadcast context. (Shared by DeployOutboundFactory / UpgradeOutboundForwarder)
     function _deployOutboundForwarderImpl() internal returns (OutboundForwarder) {
         return new OutboundForwarder(usdc, paymentContract, operator);
     }
 
     /// @dev Deploy a new InboundForwarder beacon impl from USDC/TRANSMITTER/OPERATOR/INJECTIVE_CCTP_DOMAIN.
-    ///      Call within a broadcast context. (Used by InboundDeployment; reusable by a future inbound upgrade script.)
+    ///      Call within a broadcast context. (Shared by DeployInboundFactory / UpgradeInboundForwarder)
     function _deployInboundForwarderImpl() internal returns (InboundForwarder) {
         return new InboundForwarder(usdc, transmitter, operator, INJECTIVE_CCTP_DOMAIN);
     }
