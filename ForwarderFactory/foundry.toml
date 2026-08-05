@@ -6,5 +6,8 @@ solc = "0.8.30"
 # Injective EVM is confirmed to support PUSH0 (existing contracts run with PUSH0 bytecode).
 # With the paris setting, calls to contracts containing PUSH0 fail in revm with NotActivated, so use shanghai.
 evm_version = "shanghai"
+optimizer = true
+optimizer_runs = 200
+via_ir = false
 
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options

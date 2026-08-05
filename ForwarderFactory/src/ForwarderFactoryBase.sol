@@ -12,28 +12,32 @@ import {BeaconProxy} from "openzeppelin-contracts/proxy/beacon/BeaconProxy.sol";
 /**
  * @title ForwarderFactoryBase
  * @notice Shared, funds-critical base for the Inbound/Outbound forwarder factories. Centralizes the BeaconProxy
- *         CREATE2 machinery so the predicted-address invariant lives in a single definition instead of being
- *         copy-pasted across two factories.
- * @dev Template method: this base owns the invariant skeleton (beacon creation, the `beaconInitCodeHash` formula,
- *      CREATE2 prediction, deploy+init, and the UUPS authorize hook). Each concrete factory supplies the variable
- *      hooks (typed salt preimage, typed `initialize` encoding, and its own errors/events).
+ *         CREATE2 machinery so the predicted-address invariant lives in one definition instead of two copies.
+ * @dev Template method: the base owns the invariant skeleton (beacon creation, the `beaconInitCodeHash` formula,
+ *      CREATE2 prediction, deploy+init, UUPS authorize hook); each concrete factory supplies the typed salt preimage,
+ *      the typed `initialize` encoding, and its own errors/events.
  *
- *      Storage layout is identical to the pre-abstraction factories: OZ v5 parents use ERC-7201 namespaced storage
- *      (no sequential slots), so `beacon` stays at slot 0, `beaconInitCodeHash` at slot 1, and `__gap[48]` at
- *      slots 2..49 — the base block is exactly 50 slots. Concrete factories append their own storage (and their own
- *      `__gap`) starting at slot 50; the base may grow into its gap without shifting them.
+ *      Storage: OZ v5 parents use ERC-7201 namespaced storage (no sequential slots), so `beacon` is slot 0,
+ *      `beaconInitCodeHash` slot 1, `__gap[48]` slots 2..49 — a 50-slot base block. Concrete factories append from
+ *      slot 50; the base may grow into its gap without shifting them.
  *
- *      Deployment stays separated: each concrete factory creates and owns its OWN beacon in `initialize`, so the
- *      inbound/outbound upgrade lifecycles remain independent even though they share this source.
+ *      Each concrete factory creates and owns its OWN beacon in `initialize`, so the inbound/outbound upgrade
+ *      lifecycles stay independent despite sharing this source.
  */
 abstract contract ForwarderFactoryBase is Initializable, UUPSUpgradeable, Ownable2StepUpgradeable {
     /// @notice UpgradeableBeacon shared by all forwarders this factory deploys (the factory is its owner).
     address public beacon;
-    /// @notice BeaconProxy initCodeHash — a constant depending only on the beacon address and the compiled BeaconProxy
-    ///         creation code. ⚠️ FROZEN INVARIANT: computed and cached ONCE in initialize, then read from storage
-    ///         forever. Never recompute it inline (e.g. inside _predict): a future factory-logic upgrade that changes
-    ///         the embedded `type(BeaconProxy).creationCode` would then silently fork the predicted-address space and
-    ///         orphan the funds of every already-deployed forwarder. The cached value must outlive such upgrades.
+    /// @notice BeaconProxy initCodeHash, a function of the beacon address and the compiled BeaconProxy creation code.
+    ///         ⚠️ FROZEN INVARIANT: computed and cached ONCE in initialize, then read from storage forever. Never
+    ///         recompute it inline (e.g. inside _predict) — a factory-logic upgrade that changes the embedded
+    ///         `type(BeaconProxy).creationCode` would silently fork the predicted-address space and orphan the funds
+    ///         of every deployed forwarder.
+    ///
+    ///         The flip side: because the cache is frozen while `_deployAndInit` uses the compile-time creationCode,
+    ///         any build-config change (see foundry.toml) between a factory's deployment and a later impl upgrade
+    ///         makes every subsequent `createForwarder` revert AddressMismatch, permanently — deployed forwarders
+    ///         keep working, only new routes die. That is the fail-safe direction, and the golden vector in
+    ///         test/UpgradeForwarderFactory.t.sol catches the drift before it reaches a live factory.
     bytes32 public beaconInitCodeHash;
 
     // append-only: add new state variables before __gap and shrink __gap (never prepend). Base block = 50 slots.
@@ -50,46 +54,44 @@ abstract contract ForwarderFactoryBase is Initializable, UUPSUpgradeable, Ownabl
     }
 
     /// @param forwarderImplementation Address of the forwarder logic impl (pre-deployed by the deploy script).
-    /// @dev Creates the factory-owned beacon and caches the empty-data BeaconProxy initCodeHash. Byte-identical
-    ///      across both factories, hence centralized here. Each concrete factory keeps a thin `initialize` that
-    ///      calls this (so `Factory.initialize` stays resolvable for deploy scripts via the concrete name).
+    /// @dev Creates the factory-owned beacon and caches the empty-data BeaconProxy initCodeHash. Each concrete factory
+    ///      keeps a thin `initialize` calling this, so `Factory.initialize` stays resolvable via the concrete name.
     function __ForwarderFactory_init(address forwarderImplementation) internal onlyInitializing {
         if (forwarderImplementation == address(0)) revert ZeroImplementation();
-        // Establishes ownership (owner = deployer). __Ownable_init is the canonical OZ initializer and sets the owner
-        // directly. Do NOT replace it with a bare __Ownable2Step_init() — that one is a no-op and would leave the
-        // factory ownerless (owner == address(0)), permanently bricking every onlyOwner upgrade. Ownable2Step adds no
-        // init state of its own.
+        // Do NOT replace with a bare __Ownable2Step_init() — that is a no-op and would leave the factory ownerless
+        // (owner == address(0)), permanently bricking every onlyOwner upgrade. Ownable2Step adds no init state.
         __Ownable_init(msg.sender);
-        // The factory (proxy) is the beacon owner. address(this) = proxy.
+        // The factory (proxy) is the beacon owner.
         beacon = address(new UpgradeableBeacon(forwarderImplementation, address(this)));
-        // Must structurally match the empty-data BeaconProxy initcode tail abi.encode(beacon, "") for the address to line up.
+        // Must match the empty-data BeaconProxy initcode tail abi.encode(beacon, "") for the address to line up.
         beaconInitCodeHash = keccak256(abi.encodePacked(type(BeaconProxy).creationCode, abi.encode(beacon, bytes(""))));
     }
 
-    /// @dev Prediction only. salt from the concrete's preimage, initCodeHash from the cached constant. Uses
-    ///      address(this) (= proxy) as the deployer, hence view.
+    /// @dev Prediction only: salt from the concrete's preimage, initCodeHash from the frozen cache, deployer =
+    ///      address(this) (the proxy).
     function _predict(bytes32 salt) internal view returns (address) {
         return Create2.computeAddress(salt, beaconInitCodeHash, address(this));
     }
 
-    /// @dev Deploys the BeaconProxy via CREATE2 (empty data → constant initCodeHash) and atomically initializes it
-    ///      in the same tx. `initData` is built by the concrete with abi.encodeCall, preserving compile-time typing.
+    /// @dev Deploys the BeaconProxy via CREATE2 and initializes it atomically in the same tx.
     /// @param salt The CREATE2 salt (concrete-built preimage).
-    /// @param predicted The address the concrete already predicted for this salt (re-verified post-deploy).
+    /// @param predicted The address the concrete predicted for this salt (re-verified post-deploy).
     /// @param initData abi.encodeCall(Forwarder.initialize, (...)) for the per-route init.
     function _deployAndInit(bytes32 salt, address predicted, bytes memory initData)
         internal
         returns (address forwarder)
     {
         forwarder = address(new BeaconProxy{salt: salt}(beacon, ""));
+        // Guards the frozen-cache invariant: a mismatch means the compiled creationCode no longer matches
+        // beaconInitCodeHash (build-config drift), so refuse rather than deploy to an unpredicted address.
         if (forwarder != predicted) revert AddressMismatch();
 
         // Bubbles the forwarder's revert reason on failure (FailedInnerCall when it reverted without data).
         Address.functionCall(forwarder, initData);
     }
 
-    /// @dev Swap the beacon impl to upgrade all deployed forwarders' logic (and immutables) in bulk. The concrete
-    ///      wraps this with its own typed function + event so the external ABI is unchanged.
+    /// @dev Swap the beacon impl to upgrade all deployed forwarders' logic (and immutables) in bulk. Applies to
+    ///      forwarders deployed later too — the BeaconProxy initcode holds only the beacon address, never the impl.
     function _upgradeForwarderImpl(address newImplementation) internal {
         UpgradeableBeacon(beacon).upgradeTo(newImplementation);
     }

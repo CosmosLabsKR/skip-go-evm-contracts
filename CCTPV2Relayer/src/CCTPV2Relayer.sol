@@ -26,9 +26,13 @@ contract CCTPV2Relayer is ICCTPV2Relayer, Initializable, UUPSUpgradeable, Ownabl
     uint32 internal constant FINALITY_STANDARD = 2000;
 
     /// @dev Must stay on EVERY entry point that moves this contract's USDC, not just the swap paths. `_executeSwap`
-    ///      measures swap output as a balance delta across `router.call` and `swapCalldata` is caller-supplied, so an
-    ///      aggregator-style router can be pointed back here — any unguarded balance move inside that window is
+    ///      measures output as a balance delta across `router.call`, and `swapCalldata` is caller-supplied, so an
+    ///      aggregator-style router can be pointed back here — any unguarded balance move inside that window would be
     ///      credited as swap output and bridged to the caller.
+    ///
+    ///      Related standing invariant: this contract must never be a CCTP mintRecipient. Anyone can name it as one
+    ///      (via requestCCTPTransfer, or by calling Circle's TokenMessenger directly), and USDC minted inside the
+    ///      window would land in the same delta. No flow mints here today; adding one would break that accounting.
     modifier nonReentrant() {
         if (reentrant) revert Reentrancy();
         reentrant = true;
@@ -127,8 +131,7 @@ contract CCTPV2Relayer is ICCTPV2Relayer, Initializable, UUPSUpgradeable, Ownabl
         );
     }
 
-    /// @dev Shared core for both request* entry points: validate, pull (transfer + fee) once, approve the messenger
-    ///      for the transfer amount only, depositForBurn (v2), and emit. `destinationCaller` is the sole variable.
+    /// @dev Shared core for both request* entry points; `destinationCaller` is the sole variable between them.
     function _requestForward(
         uint256 transferAmount,
         uint32 destinationDomain,
@@ -142,13 +145,12 @@ contract CCTPV2Relayer is ICCTPV2Relayer, Initializable, UUPSUpgradeable, Ownabl
     ) internal {
         if (transferAmount == 0) revert PaymentCannotBeZero();
         if (feeAmount == 0) revert PaymentCannotBeZero();
-        // CCTP v2 requires maxFee < amount (the fee is taken from the minted amount on the destination).
+        // CCTP v2 requires maxFee < amount (it is deducted from the minted amount on the destination).
         if (maxFee >= transferAmount) revert InvalidMaxFee();
-        // In order to save gas do the transfer only once, of both transfer amount and fee amount.
-        // Note: maxFee is NOT pulled here; it is deducted from the burned amount on the destination domain.
+        // Single transfer of both amounts to save gas. maxFee is NOT pulled — the destination domain takes it.
         usdc.safeTransferFrom(msg.sender, address(this), transferAmount + feeAmount);
 
-        // Only give allowance of the transfer amount, as we want the fee amount to stay in the contract.
+        // Approve the transfer amount only, so the fee stays in this contract.
         usdc.forceApprove(address(messenger), transferAmount);
 
         _depositForBurn(
@@ -223,41 +225,34 @@ contract CCTPV2Relayer is ICCTPV2Relayer, Initializable, UUPSUpgradeable, Ownabl
     }
 
     /// @dev Swaps `inputAmount` of `inputToken` (native when address(0), else ERC20) into USDC via swapRouter and
-    ///      returns the USDC output, measured as the contract's USDC balance delta (the router's return value is not
-    ///      trusted). `inputToken` may not be USDC. Leftover input is refunded to msg.sender; for ERC20 the router
-    ///      allowance is always closed afterwards.
+    ///      returns the output measured as this contract's USDC balance delta — the router's return value is not
+    ///      trusted. Leftover input is refunded to msg.sender.
     function _executeSwap(address inputToken, uint256 inputAmount, bytes calldata swapCalldata)
         internal
         returns (uint256 outputAmount)
     {
-        // Cache the storage reads used repeatedly below.
         IERC20 outputToken = usdc;
         address router = swapRouter;
 
-        // The balance delta only measures the swap if the input cannot move the output balance itself: with
+        // The delta only measures the swap if the input cannot move the output balance itself: with
         // inputToken == usdc the caller's deposit would count as output AND be refunded as dust, draining the reserve.
         if (inputToken == address(outputToken)) revert InvalidInputToken();
 
         if (inputToken == address(0)) {
-            // Native Token
             if (inputAmount != msg.value) revert InsufficientNativeToken();
 
-            // Balance previous to the swap (subtract the value just received with this call).
+            // Pre-existing holdings only (subtract the value just received), so `dust` below is the unconsumed part
+            // of `inputAmount` and never touches ETH the contract already held.
             uint256 preInputBalance = address(this).balance - inputAmount;
-
-            // Snapshot the output balance immediately before the swap, so the delta below covers the swap only.
             uint256 preOutputBalance = outputToken.balanceOf(address(this));
 
-            // Call the swap router and perform the swap
             (bool success,) = router.call{value: inputAmount}(swapCalldata);
             if (!success) revert SwapFailed();
 
-            // Check that the contract's USDC balance has increased
             uint256 postOutputBalance = outputToken.balanceOf(address(this));
             if (preOutputBalance >= postOutputBalance) revert InsufficientSwapOutput();
             outputAmount = postOutputBalance - preOutputBalance;
 
-            // Refund the remaining ETH
             uint256 dust = address(this).balance - preInputBalance;
             if (dust != 0) {
                 (bool ethSuccess,) = msg.sender.call{value: dust}("");
@@ -266,45 +261,36 @@ contract CCTPV2Relayer is ICCTPV2Relayer, Initializable, UUPSUpgradeable, Ownabl
         } else {
             IERC20 token = IERC20(inputToken);
 
-            // Balance previous to the swap: pre-existing holdings only, so `dust` below is the unconsumed
-            // part of `inputAmount` and never touches tokens the contract already held.
+            // Pre-existing holdings only — see the native branch.
             uint256 preInputBalance = token.balanceOf(address(this));
 
-            // Transfer input ERC20 tokens to the contract
             token.safeTransferFrom(msg.sender, address(this), inputAmount);
-
-            // Approve the swap router to spend the input tokens
             token.forceApprove(router, inputAmount);
 
-            // Snapshot the output balance after the input has been pulled in and immediately before the swap,
-            // so the delta below covers the swap only and never the caller's own deposit.
+            // Snapshotted AFTER the input is pulled in and immediately before the swap, so the delta covers the swap
+            // only and never the caller's own deposit.
             uint256 preOutputBalance = outputToken.balanceOf(address(this));
 
-            // Call the swap router and perform the swap
             (bool success,) = router.call(swapCalldata);
             if (!success) revert SwapFailed();
 
-            // Check that the contract's USDC balance has increased
             uint256 postOutputBalance = outputToken.balanceOf(address(this));
             if (preOutputBalance >= postOutputBalance) revert InsufficientSwapOutput();
             outputAmount = postOutputBalance - preOutputBalance;
 
-            // Refund the remaining input amount
             uint256 dust = token.balanceOf(address(this)) - preInputBalance;
             if (dust != 0) {
                 token.safeTransfer(msg.sender, dust);
             }
 
-            // Always close the router allowance: `dust` is a balance delta and says nothing about how much allowance
-            // the router consumed. A router sourcing the input elsewhere (Permit2, own inventory) can leave dust == 0
-            // with the approval still standing, and `swapCalldata` is caller-supplied — close it rather than infer.
+            // Always close the allowance: `dust` is a balance delta and says nothing about how much the router
+            // consumed. A router sourcing input elsewhere (Permit2, own inventory) leaves dust == 0 with the approval
+            // still standing, and `swapCalldata` is caller-supplied — close it rather than infer.
             token.forceApprove(router, 0);
         }
     }
 
-    /// @dev Shared core for both swap entry points: validate inputs, swap to USDC, deduct the fee, approve the
-    ///      messenger for the transfer amount only, depositForBurn (v2), and emit. `destinationCaller` is the sole
-    ///      variable between the two callers.
+    /// @dev Shared core for both swap entry points; `destinationCaller` is the sole variable between them.
     function _swapAndForward(
         address inputToken,
         uint256 inputAmount,
@@ -323,12 +309,12 @@ contract CCTPV2Relayer is ICCTPV2Relayer, Initializable, UUPSUpgradeable, Ownabl
 
         uint256 outputAmount = _executeSwap(inputToken, inputAmount, swapCalldata);
 
-        // Check that output amount is enough to cover the fee
+        // The swap succeeded but did not clear the relay fee.
         if (outputAmount <= feeAmount) revert InsufficientSwapOutput();
         uint256 transferAmount = outputAmount - feeAmount;
         if (maxFee >= transferAmount) revert InvalidMaxFee();
 
-        // Only give allowance of the transfer amount, as we want the fee amount to stay in the contract.
+        // Approve the transfer amount only, so the fee stays in this contract.
         usdc.forceApprove(address(messenger), transferAmount);
 
         _depositForBurn(
@@ -372,9 +358,8 @@ contract CCTPV2Relayer is ICCTPV2Relayer, Initializable, UUPSUpgradeable, Ownabl
         emit Withdrawn(receiver, amount);
     }
 
-    /// @dev Routes the burn to the CCTP v2 messenger: when `hookData` is non-empty it uses
-    /// `depositForBurnWithHook` (forwarding the hook to the destination), otherwise the plain
-    /// `depositForBurn`. Both v2 calls return nothing.
+    /// @dev Routes the burn to the CCTP v2 messenger: non-empty `hookData` selects `depositForBurnWithHook`
+    ///      (forwarding the hook to the destination), otherwise plain `depositForBurn`. Both return nothing in v2.
     function _depositForBurn(
         uint256 amount,
         uint32 destinationDomain,
@@ -385,7 +370,6 @@ contract CCTPV2Relayer is ICCTPV2Relayer, Initializable, UUPSUpgradeable, Ownabl
         uint32 minFinalityThreshold,
         bytes calldata hookData
     ) internal {
-        // Only CCTP v2 standard finality values are allowed: 1000 (fast/soft) or 2000 (standard/hard).
         if (minFinalityThreshold != FINALITY_FAST && minFinalityThreshold != FINALITY_STANDARD) {
             revert InvalidFinalityThreshold();
         }

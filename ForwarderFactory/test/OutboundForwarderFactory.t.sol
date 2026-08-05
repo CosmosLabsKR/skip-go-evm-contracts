@@ -6,12 +6,14 @@ import "forge-std/Test.sol";
 import {Initializable} from "openzeppelin-contracts-upgradeable/proxy/utils/Initializable.sol";
 import {OwnableUpgradeable} from "openzeppelin-contracts-upgradeable/access/OwnableUpgradeable.sol";
 import {ERC1967Proxy} from "openzeppelin-contracts/proxy/ERC1967/ERC1967Proxy.sol";
+import {BeaconProxy} from "openzeppelin-contracts/proxy/beacon/BeaconProxy.sol";
 import {Create2} from "openzeppelin-contracts/utils/Create2.sol";
 import {IERC20} from "openzeppelin-contracts/token/ERC20/IERC20.sol";
 import {ERC20Mock} from "openzeppelin-contracts/mocks/token/ERC20Mock.sol";
 
 import {OutboundForwarderFactory} from "../src/OutboundForwarderFactory.sol";
 import {IOutboundForwarderFactory} from "../src/interfaces/IOutboundForwarderFactory.sol";
+import {IOutboundForwarder} from "../src/interfaces/IOutboundForwarder.sol";
 import {OutboundForwarder} from "../src/OutboundForwarder.sol";
 import {ICCTPV2Relayer} from "../src/interfaces/ICCTPV2Relayer.sol";
 
@@ -445,7 +447,7 @@ contract OutboundForwarderFactoryTest is Test {
         assertEq(relayer.lastMaxFee(), 900e6 - 1, "maxFee == amount-1 ok");
 
         vm.prank(operator);
-        vm.expectRevert(OutboundForwarder.InvalidMaxFee.selector);
+        vm.expectRevert(IOutboundForwarder.InvalidMaxFee.selector);
         f.requestTransfer(900e6, 10e6, 900e6, minFinality, hex"");
     }
 
@@ -455,11 +457,11 @@ contract OutboundForwarderFactoryTest is Test {
         address[2] memory bad = [address(0xDEAD), sender];
         for (uint256 i = 0; i < bad.length; i++) {
             vm.prank(bad[i]);
-            vm.expectRevert(OutboundForwarder.NotOperator.selector);
+            vm.expectRevert(IOutboundForwarder.NotOperator.selector);
             f.requestTransfer(100e6, 1e6, 1e6, minFinality, hex"");
 
             vm.prank(bad[i]);
-            vm.expectRevert(OutboundForwarder.NotOperator.selector);
+            vm.expectRevert(IOutboundForwarder.NotOperator.selector);
             f.requestTransferWithCaller(100e6, 1e6, 1e6, minFinality, destCaller, hex"");
         }
         vm.prank(operator);
@@ -471,11 +473,11 @@ contract OutboundForwarderFactoryTest is Test {
     function test_TC18_RequestTransferZeroAmount() public {
         OutboundForwarder f = _deployFunded(1000e6);
         vm.prank(operator);
-        vm.expectRevert(OutboundForwarder.ZeroAmount.selector);
+        vm.expectRevert(IOutboundForwarder.ZeroAmount.selector);
         f.requestTransfer(0, 1e6, 0, minFinality, hex"");
 
         vm.prank(operator);
-        vm.expectRevert(OutboundForwarder.ZeroAmount.selector);
+        vm.expectRevert(IOutboundForwarder.ZeroAmount.selector);
         f.requestTransferWithCaller(0, 1e6, 0, minFinality, destCaller, hex"");
     }
 
@@ -483,11 +485,11 @@ contract OutboundForwarderFactoryTest is Test {
     function test_TC18b_RequestTransferZeroFee() public {
         OutboundForwarder f = _deployFunded(1000e6);
         vm.prank(operator);
-        vm.expectRevert(OutboundForwarder.ZeroFee.selector);
+        vm.expectRevert(IOutboundForwarder.ZeroFee.selector);
         f.requestTransfer(100e6, 0, 1e6, minFinality, hex"");
 
         vm.prank(operator);
-        vm.expectRevert(OutboundForwarder.ZeroFee.selector);
+        vm.expectRevert(IOutboundForwarder.ZeroFee.selector);
         f.requestTransferWithCaller(100e6, 0, 1e6, minFinality, destCaller, hex"");
     }
 
@@ -495,11 +497,11 @@ contract OutboundForwarderFactoryTest is Test {
     function test_TC18c_RequestTransferInvalidMaxFee() public {
         OutboundForwarder f = _deployFunded(1000e6);
         vm.prank(operator);
-        vm.expectRevert(OutboundForwarder.InvalidMaxFee.selector);
+        vm.expectRevert(IOutboundForwarder.InvalidMaxFee.selector);
         f.requestTransfer(100e6, 1e6, 100e6, minFinality, hex"");
 
         vm.prank(operator);
-        vm.expectRevert(OutboundForwarder.InvalidMaxFee.selector);
+        vm.expectRevert(IOutboundForwarder.InvalidMaxFee.selector);
         f.requestTransferWithCaller(100e6, 1e6, 100e6, minFinality, destCaller, hex"");
     }
 
@@ -507,11 +509,11 @@ contract OutboundForwarderFactoryTest is Test {
     function test_TC18d_RequestTransferInvalidFinality() public {
         OutboundForwarder f = _deployFunded(1000e6);
         vm.prank(operator);
-        vm.expectRevert(OutboundForwarder.InvalidFinalityThreshold.selector);
+        vm.expectRevert(IOutboundForwarder.InvalidFinalityThreshold.selector);
         f.requestTransfer(100e6, 1e6, 1e6, 1500, hex"");
 
         vm.prank(operator);
-        vm.expectRevert(OutboundForwarder.InvalidFinalityThreshold.selector);
+        vm.expectRevert(IOutboundForwarder.InvalidFinalityThreshold.selector);
         f.requestTransferWithCaller(100e6, 1e6, 1e6, 999, destCaller, hex"");
     }
 
@@ -557,7 +559,7 @@ contract OutboundForwarderFactoryTest is Test {
     function test_TC20_RecoverERC20() public {
         OutboundForwarder f = _deployFunded(777e6);
         vm.prank(address(0xDEAD));
-        vm.expectRevert(OutboundForwarder.NotOperator.selector);
+        vm.expectRevert(IOutboundForwarder.NotOperator.selector);
         f.recoverERC20(address(usdc));
 
         vm.prank(operator);
@@ -572,12 +574,12 @@ contract OutboundForwarderFactoryTest is Test {
 
         // operator-only
         vm.prank(address(0xDEAD));
-        vm.expectRevert(OutboundForwarder.NotOperator.selector);
+        vm.expectRevert(IOutboundForwarder.NotOperator.selector);
         f.recoverERC20(address(usdc), 400e6);
 
         // amount == 0 reverts ZeroAmount
         vm.prank(operator);
-        vm.expectRevert(OutboundForwarder.ZeroAmount.selector);
+        vm.expectRevert(IOutboundForwarder.ZeroAmount.selector);
         f.recoverERC20(address(usdc), 0);
 
         // partial: 400e6 to sender, 600e6 remains
@@ -605,7 +607,7 @@ contract OutboundForwarderFactoryTest is Test {
         (bool ok, bytes memory data) = address(f).call{value: 1 wei}("");
 
         assertFalse(ok, "native transfer must revert");
-        assertEq(bytes4(data), OutboundForwarder.NativeNotAccepted.selector);
+        assertEq(bytes4(data), IOutboundForwarder.NativeNotAccepted.selector);
         assertEq(address(f).balance, 0);
     }
 
@@ -619,7 +621,7 @@ contract OutboundForwarderFactoryTest is Test {
 
         // The old operator is no longer allowed
         vm.prank(operator);
-        vm.expectRevert(OutboundForwarder.NotOperator.selector);
+        vm.expectRevert(IOutboundForwarder.NotOperator.selector);
         f.requestTransfer(100e6, 1e6, 1e6, minFinality, hex"");
 
         // The new operator succeeds
@@ -630,11 +632,11 @@ contract OutboundForwarderFactoryTest is Test {
 
     // TC-23: OutboundForwarder constructor zero-address validation
     function test_TC23_ConstructorZeroReverts() public {
-        vm.expectRevert(OutboundForwarder.ZeroAddress.selector);
+        vm.expectRevert(IOutboundForwarder.ZeroAddress.selector);
         new OutboundForwarder(address(0), address(relayer), operator);
-        vm.expectRevert(OutboundForwarder.ZeroAddress.selector);
+        vm.expectRevert(IOutboundForwarder.ZeroAddress.selector);
         new OutboundForwarder(address(usdc), address(0), operator);
-        vm.expectRevert(OutboundForwarder.ZeroAddress.selector);
+        vm.expectRevert(IOutboundForwarder.ZeroAddress.selector);
         new OutboundForwarder(address(usdc), address(relayer), address(0));
     }
 
@@ -642,7 +644,7 @@ contract OutboundForwarderFactoryTest is Test {
     function test_TC23b_ConstructorUsdcMismatch() public {
         ERC20Mock usdc2 = new ERC20Mock();
         // relayer.usdc() == usdc (original) != usdc2 → UsdcMismatch
-        vm.expectRevert(OutboundForwarder.UsdcMismatch.selector);
+        vm.expectRevert(IOutboundForwarder.UsdcMismatch.selector);
         new OutboundForwarder(address(usdc2), address(relayer), operator);
     }
 
@@ -661,7 +663,7 @@ contract OutboundForwarderFactoryTest is Test {
         rr.setTarget(f, minFinality);
 
         vm.prank(address(rr));
-        vm.expectRevert(OutboundForwarder.Reentrancy.selector);
+        vm.expectRevert(IOutboundForwarder.Reentrancy.selector);
         f.requestTransfer(100e6, 1e6, 1e6, minFinality, hex"");
     }
 
@@ -692,5 +694,37 @@ contract OutboundForwarderFactoryTest is Test {
         assertEq(f.sender(), sender, "sender bound to route key");
         assertEq(f.destinationDomain(), destDomain, "domain bound to route key");
         assertEq(f.mintRecipient(), mintRecipient, "recipient bound to route key");
+    }
+
+    // TC-28: pins the initCodeHash FORMULA (creationCode + abi.encode(beacon, "")) that __ForwarderFactory_init
+    // caches, so a change to how the tail is composed is caught here. The separate build-config drift risk — the
+    // cached hash being frozen on-chain while creationCode moves under a later recompile — cannot be caught by a
+    // same-build recomputation and is pinned as a golden vector in UpgradeForwarderFactory.t.sol instead.
+    function test_TC28_BeaconInitCodeHashMatchesCompiledBeaconProxy() public {
+        bytes32 recomputed =
+            keccak256(abi.encodePacked(type(BeaconProxy).creationCode, abi.encode(factory.beacon(), bytes(""))));
+        assertEq(factory.beaconInitCodeHash(), recomputed, "cached initCodeHash drifted from compiled BeaconProxy");
+    }
+
+    // TC-29: a factory UUPS upgrade must leave createForwarder WORKING, not merely leave getForwarderAddress stable.
+    // TC-08 only proves the upgrade is owner-gated and TC-13 covers the beacon path; without this, the whole
+    // cached-hash-vs-fresh-creationCode failure mode (TC-28) would pass the upgrade suite unnoticed.
+    function test_TC29_FactoryUUPSUpgradeKeepsCreateForwarderWorking() public {
+        address predictedBefore = factory.getForwarderAddress(sender, destDomain, mintRecipient);
+
+        factory.upgradeToAndCall(address(new OutboundForwarderFactoryV2()), "");
+
+        assertEq(
+            factory.getForwarderAddress(sender, destDomain, mintRecipient), predictedBefore, "predicted addr stable"
+        );
+        // The assertion that actually exercises _deployAndInit's CREATE2 against the cached hash.
+        assertEq(factory.createForwarder(sender, destDomain, mintRecipient), predictedBefore, "deploy == predict");
+        // A route untouched before the upgrade must deploy correctly too.
+        address other = address(0x9999);
+        assertEq(
+            factory.createForwarder(other, destDomain, mintRecipient),
+            factory.getForwarderAddress(other, destDomain, mintRecipient),
+            "fresh route deploy == predict post-upgrade"
+        );
     }
 }

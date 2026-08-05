@@ -4,6 +4,7 @@ pragma solidity ^0.8.20;
 import "forge-std/Test.sol";
 
 import {ERC1967Proxy} from "openzeppelin-contracts/proxy/ERC1967/ERC1967Proxy.sol";
+import {BeaconProxy} from "openzeppelin-contracts/proxy/beacon/BeaconProxy.sol";
 import {OwnableUpgradeable} from "openzeppelin-contracts-upgradeable/access/OwnableUpgradeable.sol";
 import {ERC20Mock} from "openzeppelin-contracts/mocks/token/ERC20Mock.sol";
 
@@ -108,6 +109,62 @@ contract UpgradeForwarderFactoryTest is Test {
         assertEq(factory.beacon(), beaconBefore, "beacon persists across factory upgrade");
         assertEq(factory.getForwarderAddress(sender, destChainId, destReceiver), predictedBefore, "predicted addr stable");
         assertEq(InboundForwarderFactoryV2(address(factory)).factoryVersion(), 2, "factory runs V2 logic");
+    }
+
+    // A factory UUPS upgrade must leave createForwarder WORKING, not merely leave getForwarderAddress stable.
+    // getForwarderAddress reads the CACHED beaconInitCodeHash while createForwarder builds the proxy from the
+    // compile-time creationCode, so only an actual deploy exercises the two against each other.
+    function test_FactoryUUPSUpgrade_CreateForwarderStillWorks() public {
+        address predictedBefore = factory.getForwarderAddress(sender, destChainId, destReceiver);
+
+        factory.upgradeToAndCall(address(new InboundForwarderFactoryV2()), "");
+
+        assertEq(factory.createForwarder(sender, destChainId, destReceiver), predictedBefore, "deploy == predict");
+        address other = address(0x9999);
+        assertEq(
+            factory.createForwarder(other, destChainId, destReceiver),
+            factory.getForwarderAddress(other, destChainId, destReceiver),
+            "fresh route deploy == predict post-upgrade"
+        );
+    }
+
+    // ── build-config drift guard (funds-critical) ──
+
+    // GOLDEN VECTOR. beaconInitCodeHash is cached once at initialize (i.e. frozen on-chain at deploy time), but
+    // _deployAndInit builds the proxy from the compile-time type(BeaconProxy).creationCode. Those two are taken at
+    // DIFFERENT points in time, so any build knob feeding creationCode — optimizer/optimizer_runs/via_ir/solc/
+    // evm_version/bytecode_hash, or the openzeppelin-contracts pin — that changes between a factory's deployment and
+    // a later implementation upgrade makes every subsequent createForwarder revert AddressMismatch, permanently
+    // (deployed forwarders keep working; only new routes die).
+    //
+    // A same-build recomputation cannot detect that: both sides would move together and the assert would be
+    // tautological. So the expected value is pinned as a LITERAL here. If this fails, the build config changed —
+    // that is safe ONLY while no factory is live. If one is, the change must be reverted or the factory redeployed.
+    // Regenerate with: console2.logBytes32(keccak256(type(BeaconProxy).creationCode))
+    bytes32 internal constant BEACON_PROXY_CREATION_CODE_HASH =
+        0xf420d459616cccfa040beb52c4b15054a0d9ef8f3415966d15bf73c50206e728;
+
+    function test_BeaconProxyCreationCode_FrozenAgainstGoldenVector() public {
+        assertEq(
+            keccak256(type(BeaconProxy).creationCode),
+            BEACON_PROXY_CREATION_CODE_HASH,
+            "BeaconProxy creationCode drifted -> live factories can no longer createForwarder (see foundry.toml)"
+        );
+    }
+
+    // Complements the golden vector: pins the FORMULA (creationCode + abi.encode(beacon, "")) that the cached hash
+    // must equal, so a change to how __ForwarderFactory_init composes the tail is caught even if creationCode is intact.
+    function test_BeaconInitCodeHash_MatchesCompiledBeaconProxy() public {
+        bytes32 recomputed =
+            keccak256(abi.encodePacked(type(BeaconProxy).creationCode, abi.encode(factory.beacon(), bytes(""))));
+        assertEq(factory.beaconInitCodeHash(), recomputed, "cached initCodeHash drifted from the documented formula");
+    }
+
+    // The formula guard must be sharp: a tail built against a DIFFERENT beacon must not match.
+    function test_BeaconInitCodeHash_GuardIsSharp() public {
+        bytes32 wrongBeacon =
+            keccak256(abi.encodePacked(type(BeaconProxy).creationCode, abi.encode(address(0xDEAD), bytes(""))));
+        assertTrue(factory.beaconInitCodeHash() != wrongBeacon, "guard must reject a foreign beacon");
     }
 
     // factory UUPS upgrade is owner-only.
