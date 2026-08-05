@@ -23,6 +23,15 @@ contract DeployInboundFactoryScript is BaseScript {
 
         vm.stopBroadcast();
 
+        // Post-conditions: the invariants every later script depends on must hold from the first block.
+        InboundForwarderFactory factory = InboundForwarderFactory(address(proxy));
+        address beacon = factory.beacon();
+        require(factory.owner() == msg.sender, "factory owner != deployer");
+        require(UpgradeableBeacon(beacon).owner() == address(factory), "beacon owner != factory proxy");
+        require(UpgradeableBeacon(beacon).implementation() == address(forwarderImpl), "impl not installed on beacon");
+        // Frozen invariant (ForwarderFactoryBase): the initCodeHash must be cached at initialize, never recomputed.
+        require(factory.beaconInitCodeHash() != bytes32(0), "beaconInitCodeHash not cached");
+
         console2.log("InboundForwarder implementation:", address(forwarderImpl));
         console2.log("InboundForwarder USDC bank denom:", forwarderImpl.DENOM());
         console2.log("InboundForwarderFactory implementation:", address(impl));

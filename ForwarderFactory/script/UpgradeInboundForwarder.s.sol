@@ -16,12 +16,17 @@ contract UpgradeInboundForwarderScript is BaseScript {
         address factoryProxy = vm.envAddress("INBOUND_FORWARDER_FACTORY_PROXY");
         address beaconBefore = InboundForwarderFactory(factoryProxy).beacon();
 
+        // Pre-flight, before any broadcast: `_deployInboundForwarderImpl` below re-injects every immutable from
+        // Config, so refuse to proceed if Config has drifted away from what is live (unless asked to rebind).
+        _assertInboundImmutablesMatch(_liveForwarderImpl(factoryProxy));
+
         vm.startBroadcast();
         InboundForwarder newImpl = _deployInboundForwarderImpl(); // ← re-inject new logic/immutables from USDC/TRANSMITTER/OPERATOR/INJECTIVE_CCTP_DOMAIN
         InboundForwarderFactory(factoryProxy).upgradeForwarderImplementation(address(newImpl));
         vm.stopBroadcast();
 
         require(InboundForwarderFactory(factoryProxy).beacon() == beaconBefore, "beacon must not change");
+        require(_liveForwarderImpl(factoryProxy) == address(newImpl), "new impl not installed on beacon");
         console2.log("New InboundForwarder impl:", address(newImpl));
         console2.log("Beacon (unchanged):", beaconBefore);
     }
