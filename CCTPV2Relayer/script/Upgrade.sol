@@ -26,7 +26,10 @@ contract UpgradeScript is BaseScript {
         address messengerBefore = address(relayer.messenger());
         address transmitterBefore = address(relayer.transmitter());
         address routerBefore = relayer.swapRouter();
-        uint256 versionBefore = relayer.version();
+        (uint256 versionBefore, bool versionExisted) = _tryVersion(proxy);
+        if (!versionExisted) {
+            console2.log("!! live impl predates version() - treating as 0");
+        }
 
         vm.startBroadcast();
         CCTPV2Relayer newImplementation = new CCTPV2Relayer();
@@ -40,9 +43,10 @@ contract UpgradeScript is BaseScript {
         require(address(relayer.transmitter()) == transmitterBefore, "transmitter changed across upgrade");
         require(relayer.swapRouter() == routerBefore, "swapRouter changed across upgrade");
 
+        // The new impl always ships version(), so here it is required rather than probed.
         uint256 versionAfter = relayer.version();
         require(versionAfter >= versionBefore, "version() regressed");
-        if (versionAfter == versionBefore) {
+        if (versionExisted && versionAfter == versionBefore) {
             // version() exists so an operator can tell which implementation is live; shipping without a bump
             // leaves that question unanswerable. Surfaced, not blocked — whether to bump is the author's call.
             console2.log("!! version() unchanged at", versionAfter, "- consider bumping it in the new impl");

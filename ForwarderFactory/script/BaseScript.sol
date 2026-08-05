@@ -4,6 +4,7 @@ pragma solidity ^0.8.20;
 import "forge-std/Script.sol";
 import "./Config.sol";
 import {UpgradeableBeacon} from "openzeppelin-contracts/proxy/beacon/UpgradeableBeacon.sol";
+import {BeaconProxy} from "openzeppelin-contracts/proxy/beacon/BeaconProxy.sol";
 import {ForwarderFactoryBase} from "../src/ForwarderFactoryBase.sol";
 import {OutboundForwarder} from "../src/OutboundForwarder.sol";
 import {InboundForwarder} from "../src/InboundForwarder.sol";
@@ -23,7 +24,7 @@ abstract contract BaseScript is Script {
 
     constructor() {
         if (block.chainid == CHAIN_INJECTIVE) {
-            usdc = USDC_MAINNET;
+            usdc = USDC_INJECTIVE;
             paymentContract = PAYMENT_CONTRACT_INJECTIVE;
             operator = OPERATOR_INJECTIVE;
             transmitter = TRANSMITTER_INJECTIVE;
@@ -128,5 +129,35 @@ abstract contract BaseScript is Script {
         _diff("paymentContract", address(live.paymentContract()), paymentContract);
         _diff("operator", live.operator(), operator);
         _settleDrift();
+    }
+
+    /// @dev ⚠️ PRE-FLIGHT FOR FACTORY (UUPS) UPGRADES ONLY — call BEFORE startBroadcast.
+    ///
+    ///      `beaconInitCodeHash` was frozen in the live factory's storage at deploy time, but the NEW implementation
+    ///      about to be installed builds proxies from ITS OWN compile-time type(BeaconProxy).creationCode. If the two
+    ///      disagree, the upgrade succeeds and then every createForwarder reverts AddressMismatch — permanently, with
+    ///      no way back except deploying a whole new factory. Deployed forwarders keep working, so nothing looks
+    ///      broken until the next route is needed.
+    ///
+    ///      A build-config change (optimizer/runs/via_ir/solc/evm_version, or the openzeppelin-contracts pin) between
+    ///      the factory's deployment and now is enough to trigger it, which is exactly why the upgrade scripts cannot
+    ///      be trusted to fail on their own: they never call createForwarder.
+    ///
+    ///      If this reverts, DO NOT force the upgrade. Deploy a fresh factory instead (Deploy*Factory) and migrate.
+    function _assertFactoryUpgradeKeepsAddressSpace(address factoryProxy) internal view {
+        bytes32 cached = ForwarderFactoryBase(factoryProxy).beaconInitCodeHash();
+        address beacon = ForwarderFactoryBase(factoryProxy).beacon();
+        bytes32 fromThisBuild =
+            keccak256(abi.encodePacked(type(BeaconProxy).creationCode, abi.encode(beacon, bytes(""))));
+        if (cached != fromThisBuild) {
+            console2.log("  cached beaconInitCodeHash (live factory):");
+            console2.logBytes32(cached);
+            console2.log("  from this build:");
+            console2.logBytes32(fromThisBuild);
+            revert(
+                "build drift: upgrading this factory would permanently brick createForwarder - deploy a new factory instead"
+            );
+        }
+        console2.log("beaconInitCodeHash matches this build - createForwarder survives the upgrade");
     }
 }

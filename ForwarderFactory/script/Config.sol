@@ -10,8 +10,11 @@ pragma solidity >=0.8.0 <0.9.0;
 // Chain ID
 uint256 constant CHAIN_INJECTIVE = 1776;
 
-// USDC address (Injective mainnet USDC — confirmed)
-address constant USDC_MAINNET = 0xa00C59fF5a080D2b954d0c75e46E22a0c371235a;
+// USDC address (Injective mainnet USDC — confirmed).
+// Named *_INJECTIVE, not *_MAINNET: CCTPV2Relayer/script/Config.sol also declares USDC_MAINNET, but there it means
+// ETHEREUM mainnet USDC (0xA0b86991...). Two identical names with different values across sibling Config files is a
+// copy-paste accident waiting to happen, so this one carries the chain in its name.
+address constant USDC_INJECTIVE = 0xa00C59fF5a080D2b954d0c75e46E22a0c371235a;
 
 // Payment Contract (CCTPV2Relayer) address (WARNING: to be filled after deployment — placeholder)
 // ⚠️ address(0) placeholder until the real CCTPV2Relayer is deployed on Injective mainnet.

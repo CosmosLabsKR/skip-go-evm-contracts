@@ -114,4 +114,16 @@ abstract contract BaseScript is Script {
     function _configMismatchAllowed() internal view virtual returns (bool) {
         return vm.envOr("ALLOW_CONFIG_MISMATCH", false);
     }
+
+    /// @dev Reads `version()` without assuming it exists. `version()` was added after the first implementations
+    ///      shipped, so a plain `relayer.version()` reverts against any pre-version impl — which is precisely the
+    ///      impl an upgrade is most likely to be replacing. It is a diagnostic, so a missing one must never block
+    ///      the upgrade that introduces it.
+    /// @return version The reported version, or 0 when the implementation predates `version()`.
+    /// @return exists Whether the call returned a decodable value.
+    function _tryVersion(address proxy) internal view returns (uint256 version, bool exists) {
+        (bool ok, bytes memory data) = proxy.staticcall(abi.encodeWithSignature("version()"));
+        if (ok && data.length == 32) return (abi.decode(data, (uint256)), true);
+        return (0, false);
+    }
 }

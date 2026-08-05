@@ -14,6 +14,9 @@ contract UpgradeOutboundFactoryScript is BaseScript {
         address factoryProxy = vm.envAddress("OUTBOUND_FORWARDER_FACTORY_PROXY");
         address beaconBefore = OutboundForwarderFactory(factoryProxy).beacon();
 
+        // Pre-flight, before any broadcast: refuse an upgrade that would permanently brick createForwarder.
+        _assertFactoryUpgradeKeepsAddressSpace(factoryProxy);
+
         vm.startBroadcast();
         OutboundForwarderFactory newImpl = new OutboundForwarderFactory();
         // Empty calldata when no extra init is needed. Use abi.encodeCall(...) if a reinitializer is required.
