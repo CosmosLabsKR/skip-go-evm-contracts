@@ -17,13 +17,10 @@ import {CCTPV2Message} from "./libraries/CCTPV2Message.sol";
  *         address), then emits IBCTransferRequested so the *synchronous* Injective event-hook performs the IBC
  *         MsgTransfer in the same transaction.
  *
- *         Routing model v2 (dynamic-route): the per-transfer IBC route (channelId, receiver, memo) is not proxy
- *         storage — it rides in the attestation-backed CCTP hookData and is decoded on-chain here (D-2/D-3). The
- *         address commits only to the stable final intent; the volatile channel and next-hop receiver (an
- *         intermediate under multi-hop/PFM, generally != destinationReceiver) travel in hookData. Destination
- *         integrity is therefore pure-trust on the source burner (D-1): destinationChainId/destinationReceiver do
- *         not appear in the CCTP message and cannot be cross-checked on-chain — the address commits to them, and the
- *         attestation prevents operator/third-party redirection of hookData.
+ *         Routing model v2: the address commits to the stable final intent; the volatile per-transfer route
+ *         (channelId, receiver, memo) rides in attestation-backed hookData and is decoded here (D-2/D-3).
+ *         destinationChainId/destinationReceiver never appear in the CCTP message, so destination integrity is
+ *         pure-trust on the source burner (D-1) — the attestation only prevents hookData redirection.
  * @dev config (usdc/transmitter/operator/INJECTIVE_DOMAIN) is impl immutable and shared by all instances (rotated in
  *      bulk via a beacon upgrade). Per-route values live in proxy storage. All entry points are operator-only and
  *      non-reentrant.
@@ -103,10 +100,9 @@ contract InboundForwarder is IInboundForwarder, Initializable {
         // block.timestamp * 1e9 ≈ 1.78e18 today, well under uint64 max (~1.84e19) until ~year 2554.
         uint64 timeout = uint64((block.timestamp + 1 days) * 1e9);
 
-        // Field order/types MUST match IBCTransferRequested's listener ABI. sender = address(this): this forwarder is
-        // the bank holder / MsgTransfer.sender, and the hook maps that address to the Injective bank account.
-        // The memo travels as lowercase 0x-prefixed hex (the IRIS hookData representation; empty memo -> "0x"), which
-        // is plain hex and NOT the EIP-55 casing DENOM() needs — Injective compares denoms byte-for-byte, memos not.
+        // Field order/types MUST match IBCTransferRequested's listener ABI. sender = address(this) because this
+        // forwarder is the bank holder the hook maps to an Injective account. memo goes out as lowercase 0x hex
+        // (the IRIS representation, "0x" when empty) — plain hex, unlike DENOM()'s EIP-55 casing.
         emit IBCTransferRequested(
             PORT, channelId, DENOM(), minted, address(this), receiver, Strings.toHexString(memo), timeout
         );
@@ -122,10 +118,9 @@ contract InboundForwarder is IInboundForwarder, Initializable {
         emit Refunded(message._getNonce(), to, minted, RefundKind.MintTime);
     }
 
-    /// @notice Recover funds that returned here after a downstream IBC failure (timeout/error-ack). The IBC refund
-    ///         arrives as a bank coin that is ERC20-paired on Injective, so it is recoverable as USDC (design G5).
-    ///         Unrelated to any CCTP message, hence sourceNonce is 0. Reverts ZeroAmount on an empty balance, staying
-    ///         consistent with refund(0).
+    /// @notice Recover funds returned by a downstream IBC failure (timeout/error-ack). The refund arrives as a bank
+    ///         coin that is ERC20-paired on Injective, so it is recoverable as USDC (G5). Not tied to any CCTP
+    ///         message, hence sourceNonce 0.
     function refund() external onlyOperator nonReentrant {
         uint256 bal = usdc.balanceOf(address(this));
         if (bal == 0) revert ZeroAmount();
@@ -161,15 +156,13 @@ contract InboundForwarder is IInboundForwarder, Initializable {
         if (minted == 0) revert NothingMinted();
     }
 
-    /// @dev G4 binding: the attestation-verified message must mint USDC to THIS forwarder, on the Injective domain,
-    ///      from the committed source depositor. mintRecipient == address(this), itself CREATE2(salt(sender,
-    ///      destinationChainId, destinationReceiver)), is what commits the final intent. The per-transfer IBC route is
-    ///      deliberately not bound here — it rides in hookData (D-1). sourceDomain is excluded from the key (D-19).
+    /// @dev G4 binding: the message must mint to THIS forwarder, on the Injective domain, from the committed source
+    ///      depositor. mintRecipient == address(this) — itself CREATE2(salt(sender, destinationChainId,
+    ///      destinationReceiver)) — is what commits the final intent. sourceDomain is excluded from the key (D-19).
     ///
-    ///      ⚠️ Do NOT add a `burnToken == usdc` check: the burn body's `burnToken` is a SOURCE-domain address
-    ///      (Ethereum/Base/Arbitrum USDC all differ), so comparing it against this chain's `usdc` would reject every
-    ///      legitimate message. Token identity is enforced downstream and more strongly — `_receiveAndValidate`
-    ///      reverts NothingMinted unless THIS chain's `usdc` balance actually grew.
+    ///      ⚠️ Do NOT add a `burnToken == usdc` check. `burnToken` is a SOURCE-domain address, so it can never equal
+    ///      this chain's `usdc` and the check would reject every legitimate message. Token identity is already
+    ///      enforced more strongly downstream: `_receiveAndValidate` reverts unless THIS chain's balance grew.
     function _validateBinding(bytes calldata message) internal view {
         message.validateLength();
         if (message._getDestinationDomain() != INJECTIVE_DOMAIN) revert WrongDestination();
@@ -177,17 +170,13 @@ contract InboundForwarder is IInboundForwarder, Initializable {
         if (message._getMessageSender() != _toBytes32(sender)) revert WrongSender();
     }
 
-    /// @dev Decode the attestation-backed hookData into the per-transfer IBC route (D-2/D-3). Schema is an envelope
-    ///      abi.encode(address relayer, bytes inner), inner = abi.encode(string channelId, string receiver,
-    ///      bytes memo): channelId = source IBC channel for the onward MsgTransfer, receiver = next-hop recipient
-    ///      (an intermediate under multi-hop/PFM — generally NOT destinationReceiver), memo = forward/PFM payload.
+    /// @dev Decode the attestation-backed hookData into the per-transfer IBC route (D-2/D-3):
+    ///        abi.encode(address relayer, bytes inner), inner = abi.encode(string channelId, string receiver, bytes memo)
+    ///      receiver is the NEXT hop (a PFM intermediate under multi-hop), generally not destinationReceiver.
     ///
-    ///      `relayer` is a discovery tag for the off-chain transfer monitor, which filters CCTP burns by that address
-    ///      because destinationCaller is the per-transfer forwarder, not the relayer EOA. On-chain it is read and
-    ///      intentionally dropped — never used, validated, or stored.
-    ///
-    ///      A non-decodable envelope or inner tail reverts inside abi.decode, which reverts the whole tx and rolls the
-    ///      mint back. Being attestation-backed, none of this is forgeable by the operator (D-22 ③).
+    ///      `relayer` is a discovery tag the off-chain monitor filters burns by — read and dropped, never validated
+    ///      or stored. Malformed input reverts inside abi.decode, rolling the mint back. Attestation-backed, so none
+    ///      of it is forgeable by the operator (D-22 ③).
     function _decodeHook(bytes calldata hookData)
         internal
         pure
@@ -204,17 +193,14 @@ contract InboundForwarder is IInboundForwarder, Initializable {
     }
 
     /// @notice Injective bank denom of the minted USDC: `erc20:<EIP-55 checksummed usdc address>`.
-    /// @dev Derived from the immutable `usdc` rather than stored, so it is provably the token whose balance delta
-    ///      `_receiveAndValidate` measured as `minted` — never the burn body's source-domain `burnToken`.
+    /// @dev Derived from the immutable `usdc`, so it is provably the token whose balance delta became `minted` —
+    ///      never the burn body's source-domain `burnToken`.
     ///
-    ///      The checksum casing is not cosmetic: Injective builds this denom Go-side as
-    ///      "erc20:" + common.Address.Hex(), which is EIP-55, and the bank module compares denoms byte-for-byte, so a
-    ///      lowercase rendering would name an asset that does not exist. `toChecksumHexString` arrived in
-    ///      openzeppelin-contracts v5.1; before that bump the checksum was hand-rolled here.
+    ///      EIP-55 casing is load-bearing: Injective builds this denom as "erc20:" + common.Address.Hex() and the
+    ///      bank module compares byte-for-byte, so a lowercase rendering names an asset that does not exist.
     ///
-    ///      Rendered per call rather than cached in immutables. Caching saves ~20k gas per message, but mintAndRoute
-    ///      already spends far more than that hex-encoding a realistic 200-500 byte memo, so the saving is a small
-    ///      fraction of one neighbouring line — not worth carrying a fixed-width invariant on funds-critical state.
+    ///      Rendered per call, not cached in immutables — caching would save ~20k gas but mintAndRoute spends far
+    ///      more hex-encoding the memo, and a fixed-width cache adds an invariant to funds-critical state.
     function DENOM() public view returns (string memory) {
         return string.concat("erc20:", Strings.toChecksumHexString(address(usdc)));
     }

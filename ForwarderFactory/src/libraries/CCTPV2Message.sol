@@ -7,11 +7,10 @@ pragma solidity ^0.8.20;
  *         Used by the InboundForwarder to read the *same* `message` bytes that `transmitter.receiveMessage`
  *         verifies, so every value read here is attestation-backed (un-forgeable by the operator) — see D-12/D-22.
  *
- *         Hand-rolled (not Circle's libraries) by design: the same self-containment choice as ICCTPV2Relayer, which
- *         declares only the call ABI it needs locally rather than vendoring Circle's source. This is its parsing
- *         counterpart — only the minimum offsets we read are declared here, no external dependency. The offsets are
- *         drift-guarded by an independent golden vector in test/CCTPV2Message.t.sol (expected values are not produced
- *         by our own encoder, so an offset typo cannot pass common-mode).
+ *         Hand-rolled rather than vendoring Circle's source, matching ICCTPV2Relayer's self-containment: only the
+ *         offsets we read are declared, no external dependency. Drift-guarded by a golden vector in
+ *         test/CCTPV2Message.t.sol whose expected values our own encoder does not produce, so an offset typo cannot
+ *         pass common-mode.
  *
  * @dev Offsets are pinned to Circle's reference implementation (evm-cctp-contracts, v2):
  *
@@ -69,10 +68,9 @@ library CCTPV2Message {
         return bytes32(message[NONCE_OFFSET:NONCE_OFFSET + 32]);
     }
 
-    /// @notice Deliberately unused on-chain — kept so the golden vector in test/CCTPV2Message.t.sol can pin
-    ///         BURN_TOKEN_OFFSET, which sits between the offsets that ARE load-bearing and would otherwise go
-    ///         unverified. Do not wire it into validation: `burnToken` is a SOURCE-domain address and can never
-    ///         equal this chain's `usdc` (see the warning on InboundForwarder._validateBinding).
+    /// @notice Unused on-chain by design — kept only so the golden vector can pin BURN_TOKEN_OFFSET, which sits
+    ///         between load-bearing offsets. Do not wire it into validation: see the warning on
+    ///         InboundForwarder._validateBinding.
     function _getBurnToken(bytes calldata message) internal pure returns (bytes32) {
         return bytes32(message[BURN_TOKEN_OFFSET:BURN_TOKEN_OFFSET + 32]);
     }

@@ -130,30 +130,20 @@ contract UpgradeForwarderFactoryTest is Test {
 
     // ── build-config drift guard (funds-critical) ──
 
-    // GOLDEN VECTOR. beaconInitCodeHash is cached once at initialize (i.e. frozen on-chain at deploy time), but
-    // _deployAndInit builds the proxy from the compile-time type(BeaconProxy).creationCode. Those two are taken at
-    // DIFFERENT points in time, so any build knob feeding creationCode — optimizer/optimizer_runs/via_ir/solc/
-    // evm_version/bytecode_hash, or the openzeppelin-contracts pin — that changes between a factory's deployment and
-    // a later implementation upgrade makes every subsequent createForwarder revert AddressMismatch, permanently
-    // (deployed forwarders keep working; only new routes die).
+    // GOLDEN VECTOR — pinned as a LITERAL on purpose. beaconInitCodeHash is frozen on-chain at deploy time while
+    // _deployAndInit builds from compile-time type(BeaconProxy).creationCode, so anything feeding creationCode that
+    // moves between those two points makes every later createForwarder revert AddressMismatch, permanently.
+    // Recomputing here would be tautological (both sides move together), hence the literal.
     //
-    // A same-build recomputation cannot detect that: both sides would move together and the assert would be
-    // tautological. So the expected value is pinned as a LITERAL here. If this fails, the build config changed —
-    // that is safe ONLY while no factory is live. If one is, the change must be reverted or the factory redeployed.
+    // What moves it: solc, evm_version, optimizer/runs, via_ir, bytecode_hash, the openzeppelin pin — and the
+    // REMAPPING LIST, which solc embeds in the metadata blob. That last one is why foundry.toml sets
+    // auto_detect_remappings = false; while it was auto-detected, the hash depended on which nested submodules
+    // happened to be checked out locally (one commit produced three different values).
+    //
+    // A failure here is safe ONLY while no factory is live; otherwise revert the change or redeploy the factory.
     // Regenerate with: console2.logBytes32(keccak256(type(BeaconProxy).creationCode))
-    // Regenerated 2026-08-06 for the openzeppelin-contracts v5.0.0 -> v5.6.1 bump, which also forced
-    // evm_version shanghai -> cancun (OZ Strings -> Bytes uses `mcopy`). Both knobs move this hash independently.
-    // Safe to repin here only because the stable-release factory is being deployed fresh; no live factory is kept.
-    // Previous values, each moved by exactly one knob:
     //   0xf420d459616cccfa040beb52c4b15054a0d9ef8f3415966d15bf73c50206e728  OZ 5.0.0 + shanghai + via_ir off
     //   0x8cc7e0f45ee8c5703c059388032f932c7af4fa6ebae8cbe10ea167f0384d1780  OZ 5.6.1 + cancun  + via_ir off
-    //
-    // The list above is not exhaustive: solc also embeds `settings.remappings` in the metadata blob appended to
-    // creationCode, so the REMAPPING LIST moves this hash too. That list used to be partly auto-detected by
-    // scanning lib/, which made the value depend on which nested submodules happened to be checked out locally —
-    // one commit produced three different hashes that way. foundry.toml now sets auto_detect_remappings = false
-    // so the list comes only from remappings.txt; adding an entry there moves the address space just like a
-    // compiler flag does.
     bytes32 internal constant BEACON_PROXY_CREATION_CODE_HASH =
         0x6a40e73f88777784be75aec46298eb6c0acad0ec4e451bef31873c28d83d6484;
 

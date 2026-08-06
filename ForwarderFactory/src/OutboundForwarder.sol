@@ -29,11 +29,9 @@ contract OutboundForwarder is IOutboundForwarder, Initializable {
     /// @notice Route identifier and fund owner / recovery recipient.
     address public sender;
     uint32 public destinationDomain;
-    // Packs into slot 0 alongside sender + destinationDomain. Keep it that width: a wider type claims its own slot
-    // and shifts everything after it, which the beacon upgrade model forbids once proxies hold this layout.
-    // The width is a layout constraint, not a gas one — measured, `bool` packed, `uint256` in its own slot with
-    // 0/1, and the same with OZ's 1/2 priming all land within ~20 gas of each other, because the EIP-3529 refund
-    // cancels out the zero-to-nonzero write. Do not "optimise" between these shapes; only the layout matters.
+    // Packs into slot 0 with sender + destinationDomain. Keep this width: a wider type takes its own slot and shifts
+    // everything after it, which the beacon upgrade model forbids once proxies hold the layout. Layout constraint
+    // only — measured, packed `bool` / own-slot `uint256` 0/1 / OZ's 1/2 all land within ~20 gas of each other.
     bool private _reentrant;
     bytes32 public mintRecipient;
 

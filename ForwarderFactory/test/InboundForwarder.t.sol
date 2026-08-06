@@ -186,9 +186,9 @@ contract InboundForwarderTest is Test {
         );
     }
 
-    /// @dev Independent reimplementation of the memo rendering the contract now gets from Strings.toHexString:
-    ///      0x-prefixed lowercase hex. Kept hand-written on purpose — an oracle that called the same library would
-    ///      pass no matter what that library did, and the IRIS listener depends on this exact representation.
+    /// @dev Independent reimplementation of the memo rendering (0x-prefixed lowercase hex). Hand-written on purpose:
+    ///      an oracle calling Strings.toHexString would pass whatever that library did, and the IRIS listener
+    ///      depends on this exact representation.
     function _hex(bytes memory data) internal pure returns (string memory) {
         bytes16 sym = "0123456789abcdef";
         bytes memory out = new bytes(2 + data.length * 2);
@@ -389,9 +389,9 @@ contract InboundForwarderTest is Test {
         assertEq(testnetFwd.DENOM(), "erc20:0x0C382e685bbeeFE5d3d9C29e29E341fEE8E84C5d");
     }
 
-    // No fuzz companion here on purpose: DENOM() renders straight from `usdc`, so comparing it against
-    // "erc20:" ++ toChecksumHexString(usdc) would restate the implementation and could not fail. The two hardcoded
-    // vectors above are the real check — they pin the output against strings this repo does not compute.
+    // No fuzz companion on purpose: DENOM() renders straight from `usdc`, so a fuzzed comparison against
+    // "erc20:" ++ toChecksumHexString would restate the implementation and could never fail. The hardcoded vectors
+    // above are the real check — this repo does not compute those strings.
 
     // ── T2: mintAndRefund (no hookData decode on the refund path) ──
     function test_MintAndRefund() public {

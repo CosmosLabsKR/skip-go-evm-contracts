@@ -26,13 +26,11 @@ contract CCTPV2Relayer is ICCTPV2Relayer, Initializable, UUPSUpgradeable, Ownabl
     uint32 internal constant FINALITY_STANDARD = 2000;
 
     /// @dev Must stay on EVERY entry point that moves this contract's USDC, not just the swap paths. `_executeSwap`
-    ///      measures output as a balance delta across `router.call`, and `swapCalldata` is caller-supplied, so an
-    ///      aggregator-style router can be pointed back here — any unguarded balance move inside that window would be
-    ///      credited as swap output and bridged to the caller.
+    ///      measures output as a balance delta across a caller-supplied `router.call`, so a router pointed back here
+    ///      could have any unguarded balance move credited as swap output and bridged to the caller.
     ///
-    ///      Related standing invariant: this contract must never be a CCTP mintRecipient. Anyone can name it as one
-    ///      (via requestCCTPTransfer, or by calling Circle's TokenMessenger directly), and USDC minted inside the
-    ///      window would land in the same delta. No flow mints here today; adding one would break that accounting.
+    ///      Same reason this contract must never be a CCTP mintRecipient: anyone can name it as one, and USDC minted
+    ///      inside the window lands in that delta. No flow mints here today; adding one would break the accounting.
     modifier nonReentrant() {
         if (reentrant) revert Reentrancy();
         reentrant = true;
@@ -45,9 +43,7 @@ contract CCTPV2Relayer is ICCTPV2Relayer, Initializable, UUPSUpgradeable, Ownabl
     }
 
     function initialize(address usdc_, address messenger_, address transmitter_) external initializer {
-        // No __UUPSUpgradeable_init(): openzeppelin-contracts v5.5 stopped transpiling UUPSUpgradeable (it holds no
-        // storage), so the upgradeable package now just re-exports the base contract and the initializer is gone.
-        // It was an empty no-op in v5.0.0, so dropping it changes nothing about the initialized state.
+        // UUPSUpgradeable holds no storage and has no initializer (openzeppelin v5.5+); it was an empty no-op before.
         __Ownable2Step_init();
 
         if (usdc_ == address(0)) revert ZeroAddress();

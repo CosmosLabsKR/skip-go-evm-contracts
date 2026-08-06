@@ -27,17 +27,15 @@ import {BeaconProxy} from "openzeppelin-contracts/proxy/beacon/BeaconProxy.sol";
 abstract contract ForwarderFactoryBase is Initializable, UUPSUpgradeable, Ownable2StepUpgradeable {
     /// @notice UpgradeableBeacon shared by all forwarders this factory deploys (the factory is its owner).
     address public beacon;
-    /// @notice BeaconProxy initCodeHash, a function of the beacon address and the compiled BeaconProxy creation code.
-    ///         ⚠️ FROZEN INVARIANT: computed and cached ONCE in initialize, then read from storage forever. Never
-    ///         recompute it inline (e.g. inside _predict) — a factory-logic upgrade that changes the embedded
-    ///         `type(BeaconProxy).creationCode` would silently fork the predicted-address space and orphan the funds
-    ///         of every deployed forwarder.
+    /// @notice BeaconProxy initCodeHash, derived from the beacon address and the compiled BeaconProxy creation code.
+    ///         ⚠️ FROZEN INVARIANT: cached ONCE in initialize, read from storage forever. Never recompute it inline
+    ///         (e.g. in _predict) — a factory upgrade carrying different `type(BeaconProxy).creationCode` would fork
+    ///         the predicted-address space and orphan every deployed forwarder's funds.
     ///
-    ///         The flip side: because the cache is frozen while `_deployAndInit` uses the compile-time creationCode,
-    ///         any build-config change (see foundry.toml) between a factory's deployment and a later impl upgrade
-    ///         makes every subsequent `createForwarder` revert AddressMismatch, permanently — deployed forwarders
-    ///         keep working, only new routes die. That is the fail-safe direction, and the golden vector in
-    ///         test/UpgradeForwarderFactory.t.sol catches the drift before it reaches a live factory.
+    ///         Consequence: since _deployAndInit builds from compile-time creationCode, any build-config drift (see
+    ///         foundry.toml) after deployment makes every later createForwarder revert AddressMismatch permanently.
+    ///         Deployed forwarders keep working; only new routes die. The golden vector in
+    ///         test/UpgradeForwarderFactory.t.sol catches that before it reaches a live factory.
     bytes32 public beaconInitCodeHash;
 
     // append-only: add new state variables before __gap and shrink __gap (never prepend). Base block = 50 slots.
