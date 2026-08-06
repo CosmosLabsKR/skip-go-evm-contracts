@@ -78,7 +78,7 @@ contract InboundForwarderTest is Test {
     // deliberately ignored — never used, validated, or stored — so its value never affects routing.
     address constant RELAYER_TAG = address(0xC0FFEE);
 
-    // canonical event (must match injective-event/src/IBCTransferEmitter.sol)
+    // mirror of IInboundForwarder.IBCTransferRequested, for expectEmit
     event IBCTransferRequested(
         string sourcePort,
         string sourceChannel,
@@ -187,8 +187,8 @@ contract InboundForwarderTest is Test {
     }
 
     /// @dev Independent reimplementation of the memo rendering (0x-prefixed lowercase hex). Hand-written on purpose:
-    ///      an oracle calling Strings.toHexString would pass whatever that library did, and the IRIS listener
-    ///      depends on this exact representation.
+    ///      an oracle calling Strings.toHexString would pass whatever that library did, and the memo has to keep
+    ///      the IRIS representation it arrived in.
     function _hex(bytes memory data) internal pure returns (string memory) {
         bytes16 sym = "0123456789abcdef";
         bytes memory out = new bytes(2 + data.length * 2);
@@ -278,7 +278,7 @@ contract InboundForwarderTest is Test {
         vm.prank(operator);
         fwd.mintAndRoute(message, "");
 
-        // funds remain on the forwarder (synchronous hook would consume them in the same tx)
+        // mintAndRoute does not transfer — the minted USDC stays here until refund() sweeps it
         assertEq(usdc.balanceOf(address(fwd)), amount);
     }
 
@@ -370,7 +370,7 @@ contract InboundForwarderTest is Test {
         fwd.mintAndRoute(msg2, "");
     }
 
-    // ── Event ABI must equal the canonical IBCTransferEmitter listener ABI ──
+    // ── Event shape is load-bearing: it is the argument list the ICS20 precompile call will take ──
     function test_EventSignatureMatchesCanonical() public {
         bytes32 expected = keccak256("IBCTransferRequested(string,string,string,uint256,address,string,string,uint64)");
         assertEq(IBCTransferRequested.selector, expected);

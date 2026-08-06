@@ -2,14 +2,15 @@
 pragma solidity ^0.8.20;
 
 /**
- * @dev Interface for the InboundForwarder: receives a CCTP v2 message on Injective EVM (mint USDC to this
- *      address), then signals a synchronous IBC transfer to the Injective event-hook via IBCTransferRequested.
+ * @dev Interface for the InboundForwarder: receives a CCTP v2 message on Injective EVM, which mints USDC to the
+ *      forwarder, and records the intended onward IBC transfer as IBCTransferRequested. The transfer itself is not
+ *      performed yet — see the INTERIM note on InboundForwarder.
  */
 interface IInboundForwarder {
     /// @notice Distinguishes the two refund situations recorded by the Refunded event.
     enum RefundKind {
         MintTime, // mintAndRefund: minted then immediately refunded (never routed)
-        PostRoute // refund()/refund(amount): funds returned to this forwarder after a downstream IBC failure
+        PostRoute // refund()/refund(amount): sweeping funds left on the forwarder after a route attempt
     }
 
     // ── Errors ──
@@ -28,7 +29,9 @@ interface IInboundForwarder {
     error MissingBalance(); // refund amount exceeds current balance
 
     // ── Events ──
-    /// @notice ABI must match injective-event/src/IBCTransferEmitter.sol exactly (the Injective hook's listener ABI).
+    /// @notice INTERIM signal: nothing on-chain consumes this. It carries the arguments the ICS20 precompile will
+    ///         take, so the team can verify routing before that call exists. Shape is pinned by
+    ///         test_EventSignatureMatchesCanonical, which is self-contained — there is no external ABI to match.
     ///         topic0 = keccak256("IBCTransferRequested(string,string,string,uint256,address,string,string,uint64)")
     event IBCTransferRequested(
         string sourcePort,
@@ -41,7 +44,8 @@ interface IInboundForwarder {
         uint64 timeoutTimestamp
     );
 
-    /// @notice Internal accounting signal for refunds (NOT an IBC trigger — the hook ignores it).
+    /// @notice Accounting signal for refunds. Distinct from IBCTransferRequested so the two never get conflated
+    ///         once that one starts driving a real transfer.
     event Refunded(bytes32 indexed sourceNonce, address indexed to, uint256 amount, RefundKind kind);
 
     // ── State-changing (operator-only) ──

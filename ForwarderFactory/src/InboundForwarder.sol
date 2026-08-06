@@ -13,9 +13,14 @@ import {CCTPV2Message} from "./libraries/CCTPV2Message.sol";
 /**
  * @title InboundForwarder
  * @notice Per-route inbound conduit (logic impl behind a BeaconProxy), bound to the *final intent*
- *         (sender, destinationChainId, destinationReceiver). Receives a CCTP v2 message (minting USDC to this
- *         address), then emits IBCTransferRequested so the *synchronous* Injective event-hook performs the IBC
- *         MsgTransfer in the same transaction.
+ *         (sender, destinationChainId, destinationReceiver). Receives a CCTP v2 message, which mints USDC to this
+ *         address.
+ *
+ *         ⚠️ INTERIM: the onward IBC leg is not implemented yet. mintAndRoute mints and then only EMITS the
+ *         intended transfer — nothing moves the funds, so they stay on this forwarder until refund() sweeps them.
+ *         The event exists so the team can observe routing end-to-end while Injective core finishes the ICS20
+ *         precompile; once that ships, mintAndRoute calls it and performs the transfer for real. The earlier
+ *         off-chain event-hook design is abandoned — nothing consumes this event on-chain.
  *
  *         Routing model v2: the address commits to the stable final intent; the volatile per-transfer route
  *         (channelId, receiver, memo) rides in attestation-backed hookData and is decoded here (D-2/D-3).
@@ -89,28 +94,30 @@ contract InboundForwarder is IInboundForwarder, Initializable {
         return 1;
     }
 
-    /// @notice Mint via CCTP then signal an IBC transfer. The synchronous event-hook consumes the emitted event
-    ///         in the same tx; if the hook reverts, the whole tx reverts (mint rolls back, CCTP nonce unspent).
+    /// @notice Mint via CCTP and record the intended IBC transfer.
+    /// @dev ⚠️ INTERIM — this does NOT transfer. The minted USDC stays on this forwarder and the CCTP nonce is spent
+    ///      either way, so a route that is wrong (or a precompile that is still missing) leaves funds parked here
+    ///      rather than reverting; refund() is the only exit until the ICS20 call lands. Emitting is deliberately
+    ///      the last step so the future precompile call slots in ahead of it without reordering anything.
     function mintAndRoute(bytes calldata message, bytes calldata attestation) external onlyOperator nonReentrant {
         uint256 minted = _receiveAndValidate(message, attestation);
 
         // Per-transfer IBC route comes from the attestation-backed hookData (D-2), not proxy storage.
         (string memory channelId, string memory receiver, bytes memory memo) = _decodeHook(message._getHookData());
-        // IBC timeout_timestamp is unix nanoseconds (uint64), computed on-chain rather than read from the hook.
+        // IBC timeout_timestamp is unix nanoseconds (uint64), computed on-chain rather than taken from hookData.
         // block.timestamp * 1e9 ≈ 1.78e18 today, well under uint64 max (~1.84e19) until ~year 2554.
         uint64 timeout = uint64((block.timestamp + 1 days) * 1e9);
 
-        // Field order/types MUST match IBCTransferRequested's listener ABI. sender = address(this) because this
-        // forwarder is the bank holder the hook maps to an Injective account. memo goes out as lowercase 0x hex
-        // (the IRIS representation, "0x" when empty) — plain hex, unlike DENOM()'s EIP-55 casing.
+        // These are exactly the arguments the ICS20 precompile will take, so the event doubles as a dry run of the
+        // call that replaces it. sender = address(this): the precompile charges the caller's cosmos balance, which
+        // is this forwarder. memo is lowercase 0x hex (the IRIS representation, "0x" when empty) — plain hex,
+        // unlike DENOM()'s EIP-55 casing.
         emit IBCTransferRequested(
             PORT, channelId, DENOM(), minted, address(this), receiver, Strings.toHexString(memo), timeout
         );
-        // Held USDC is left in place — the synchronous hook consumes it as the IBC MsgTransfer in this same tx.
     }
 
-    /// @notice Mint then immediately refund to refundRecipient in the same tx. No event → the hook never fires,
-    ///         so no IBC transfer occurs and there is nothing to revert.
+    /// @notice Mint and immediately return the funds to refundRecipient, skipping the route entirely.
     function mintAndRefund(bytes calldata message, bytes calldata attestation) external onlyOperator nonReentrant {
         uint256 minted = _receiveAndValidate(message, attestation);
         address to = refundRecipient;
@@ -118,8 +125,9 @@ contract InboundForwarder is IInboundForwarder, Initializable {
         emit Refunded(message._getNonce(), to, minted, RefundKind.MintTime);
     }
 
-    /// @notice Recover funds returned by a downstream IBC failure (timeout/error-ack). The refund arrives as a bank
-    ///         coin that is ERC20-paired on Injective, so it is recoverable as USDC (G5). Not tied to any CCTP
+    /// @notice Sweep the forwarder's whole USDC balance to refundRecipient. Today that is every mintAndRoute that
+    ///         ever ran, since none of them move funds; once the ICS20 call lands it is instead the recovery path for
+    ///         a downstream IBC failure, whose refund arrives as an ERC20-paired bank coin (G5). Not tied to a CCTP
     ///         message, hence sourceNonce 0.
     function refund() external onlyOperator nonReentrant {
         uint256 bal = usdc.balanceOf(address(this));
