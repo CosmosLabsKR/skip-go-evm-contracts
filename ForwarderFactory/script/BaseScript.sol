@@ -3,6 +3,7 @@ pragma solidity ^0.8.20;
 
 import "forge-std/Script.sol";
 import "./Config.sol";
+import {Strings} from "openzeppelin-contracts/utils/Strings.sol";
 import {UpgradeableBeacon} from "openzeppelin-contracts/proxy/beacon/UpgradeableBeacon.sol";
 import {BeaconProxy} from "openzeppelin-contracts/proxy/beacon/BeaconProxy.sol";
 import {ForwarderFactoryBase} from "../src/ForwarderFactoryBase.sol";
@@ -86,6 +87,12 @@ abstract contract BaseScript is Script {
         if (live != cfg) _recordDrift(field, vm.toString(live), vm.toString(cfg));
     }
 
+    /// @dev Separate name rather than a third `_diff` overload: `string` and `address` literals are not distinct
+    ///      enough at the call site for overload resolution to be obvious to a reader.
+    function _diffStr(string memory field, string memory live, string memory cfg) private {
+        if (keccak256(bytes(live)) != keccak256(bytes(cfg))) _recordDrift(field, live, cfg);
+    }
+
     function _recordDrift(string memory field, string memory live, string memory cfg) private {
         _driftCount++;
         console2.log("  DRIFT", field);
@@ -111,10 +118,15 @@ abstract contract BaseScript is Script {
 
     /// @dev Call BEFORE startBroadcast: a failure here must cost nothing and leave no on-chain trace.
     ///      Add a `_diff` line here whenever InboundForwarder gains an immutable — nothing else will notice.
+    ///      Exception, already applied: `_denomHi`/`_denomLo` are a pure function of `usdc`, computed in the
+    ///      constructor from the very value compared below, so the `usdc` line covers them. The DENOM() assert that
+    ///      follows makes that coverage explicit rather than implied, and would catch a change to the rendering
+    ///      itself (prefix, checksum casing) that a raw address comparison cannot see.
     function _assertInboundImmutablesMatch(address liveImpl) internal {
         _requireForwarderKind(liveImpl, "transmitter()", "InboundForwarder");
         InboundForwarder live = InboundForwarder(payable(liveImpl));
         _diff("usdc", address(live.usdc()), usdc);
+        _diffStr("DENOM", live.DENOM(), string.concat("erc20:", Strings.toChecksumHexString(usdc)));
         _diff("transmitter", address(live.transmitter()), transmitter);
         _diff("operator", live.operator(), operator);
         _diff("INJECTIVE_DOMAIN", live.INJECTIVE_DOMAIN(), INJECTIVE_CCTP_DOMAIN);

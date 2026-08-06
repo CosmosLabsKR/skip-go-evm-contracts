@@ -80,18 +80,25 @@ contract InboundForwarder is IInboundForwarder, Initializable {
         operator = operator_;
         INJECTIVE_DOMAIN = injectiveDomain_;
 
-        // Render the denom once here rather than on every mintAndRoute. Split the 48-byte string into the two
-        // immutable words; `d` is a fresh 48-byte buffer, so both loads stay inside it (the second reads 32 bytes
-        // from offset 32, of which the trailing 16 are the allocation's zero padding — exactly bytes16's low half).
+        // Render the denom once here rather than on every mintAndRoute, then split it across the two immutable
+        // words. The 48-byte length is load-bearing — it is what makes bytes32 ++ bytes16 hold the string exactly —
+        // so assert it rather than trust it: a longer rendering would be silently truncated, and the resulting
+        // denom would name a bank asset that does not exist on Injective. Constructor-only, so a wrong prefix or a
+        // changed upstream hex format costs a failed deployment instead of stranded funds.
         bytes memory d = bytes(_erc20Denom(usdc_));
-        bytes32 hi;
-        bytes32 lo;
-        assembly {
-            hi := mload(add(d, 0x20))
-            lo := mload(add(d, 0x40))
+        if (d.length != 48) revert DenomLengthUnexpected();
+        // Assembled byte by byte instead of with two mload's: this runs once at deploy time, so the bounds-checked
+        // form costs nothing and keeps the contract free of any memory-safety argument.
+        uint256 hi;
+        uint256 lo;
+        for (uint256 i = 0; i < 32; ++i) {
+            hi |= uint256(uint8(d[i])) << (248 - i * 8);
         }
-        _denomHi = hi;
-        _denomLo = bytes16(lo);
+        for (uint256 i = 0; i < 16; ++i) {
+            lo |= uint256(uint8(d[32 + i])) << (248 - i * 8);
+        }
+        _denomHi = bytes32(hi);
+        _denomLo = bytes16(bytes32(lo)); // keeps the top 16 bytes, where the loop above placed them
 
         _disableInitializers();
     }

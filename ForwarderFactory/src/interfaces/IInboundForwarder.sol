@@ -14,6 +14,7 @@ interface IInboundForwarder {
 
     // ── Errors ──
     error ZeroAddress();
+    error DenomLengthUnexpected(); // constructor: rendered denom is not the 48 bytes the immutable split assumes
     error EmptyRoute(); // initialize: empty destinationChainId/destinationReceiver
     error EmptyHookRoute(); // mintAndRoute: decoded hookData has empty channelId/receiver
     error NotOperator();
