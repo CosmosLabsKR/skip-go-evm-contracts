@@ -42,6 +42,13 @@ contract InboundForwarder is IInboundForwarder, Initializable {
     address public immutable operator; // single trusted entity
     uint32 public immutable INJECTIVE_DOMAIN; // CCTP destination domain (binding check)
 
+    /// @dev The bank denom string, rendered once in the constructor and held as two immutable words. It is exactly
+    ///      48 bytes ("erc20:" 6 + "0x" 2 + 40 hex chars), so it packs into bytes32 + bytes16 with no slack.
+    ///      Solidity has no immutable string, but immutables live in the impl's bytecode, which delegatecall executes
+    ///      — unlike storage, they are readable through the beacon proxy (`usdc` above relies on the same property).
+    bytes32 private immutable _denomHi;
+    bytes16 private immutable _denomLo;
+
     // ── per-route (proxy storage; salt inputs = the stable final intent) ──
     address public sender; // source-EVM burn depositor (0x)        (route key #1)
     string public destinationChainId; // final destination chain id (route key #2 · address-engraved)
@@ -72,6 +79,20 @@ contract InboundForwarder is IInboundForwarder, Initializable {
         transmitter = IReceiver(transmitter_);
         operator = operator_;
         INJECTIVE_DOMAIN = injectiveDomain_;
+
+        // Render the denom once here rather than on every mintAndRoute. Split the 48-byte string into the two
+        // immutable words; `d` is a fresh 48-byte buffer, so both loads stay inside it (the second reads 32 bytes
+        // from offset 32, of which the trailing 16 are the allocation's zero padding — exactly bytes16's low half).
+        bytes memory d = bytes(_erc20Denom(usdc_));
+        bytes32 hi;
+        bytes32 lo;
+        assembly {
+            hi := mload(add(d, 0x20))
+            lo := mload(add(d, 0x40))
+        }
+        _denomHi = hi;
+        _denomLo = bytes16(lo);
+
         _disableInitializers();
     }
 
@@ -220,14 +241,14 @@ contract InboundForwarder is IInboundForwarder, Initializable {
 
     /// @notice Injective bank denom of the minted USDC: `erc20:<EIP-55 checksummed usdc address>`.
     /// @dev Derived from the immutable `usdc` rather than stored, so it is provably the token whose balance delta
-    ///      `_receiveAndValidate` measured as `minted` — never the burn body's source-domain `burnToken`. A view
-    ///      because Solidity has no immutable strings, and a constructor-set storage string would live in the impl
-    ///      and be invisible through the proxy.
+    ///      `_receiveAndValidate` measured as `minted` — never the burn body's source-domain `burnToken`. The
+    ///      rendering happens once in the constructor; this only reassembles the two immutable words.
     function DENOM() public view returns (string memory) {
-        return _erc20Denom(address(usdc));
+        return string(abi.encodePacked(_denomHi, _denomLo));
     }
 
     /// @dev Renders `erc20:0x<addr>` with the EIP-55 mixed-case checksum (Injective bank denoms are case-sensitive).
+    ///      Constructor-only: the result is cached in `_denomHi`/`_denomLo`, so this never runs on a routing path.
     function _erc20Denom(address token) private pure returns (string memory) {
         bytes memory hexStr = bytes(Strings.toHexString(token)); // "0x" + 40 lowercase hex chars
         // EIP-55 hashes the 40 lowercase hex chars (without the "0x"). Copy them out to hash, then fix case in place.
