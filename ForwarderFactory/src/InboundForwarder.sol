@@ -108,10 +108,12 @@ contract InboundForwarder is IInboundForwarder, Initializable {
         // block.timestamp * 1e9 ≈ 1.78e18 today, well under uint64 max (~1.84e19) until ~year 2554.
         uint64 timeout = uint64((block.timestamp + 1 days) * 1e9);
 
-        // These are exactly the arguments the ICS20 precompile will take, so the event doubles as a dry run of the
-        // call that replaces it. sender = address(this): the precompile charges the caller's cosmos balance, which
-        // is this forwarder. memo is lowercase 0x hex (the IRIS representation, "0x" when empty) — plain hex,
-        // unlike DENOM()'s EIP-55 casing.
+        // Carries the values the ICS20 precompile call will use, though not its exact argument list:
+        //   ICS20.transfer(sourcePort, sourceChannel, denom, amount, receiver, Height, timeoutTimestamp, memo)
+        // differs in order from index 4 on, drops `sender` (the precompile derives it from the caller — which is
+        // why address(this) is emitted here), and adds `Height timeoutHeight`, for which this timestamp-based
+        // timeout means Height(0, 0). memo is lowercase 0x hex (the IRIS representation, "0x" when empty) — plain
+        // hex, unlike DENOM()'s EIP-55 casing.
         emit IBCTransferRequested(
             PORT, channelId, DENOM(), minted, address(this), receiver, Strings.toHexString(memo), timeout
         );
