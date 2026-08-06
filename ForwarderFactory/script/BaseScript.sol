@@ -118,10 +118,9 @@ abstract contract BaseScript is Script {
 
     /// @dev Call BEFORE startBroadcast: a failure here must cost nothing and leave no on-chain trace.
     ///      Add a `_diff` line here whenever InboundForwarder gains an immutable — nothing else will notice.
-    ///      Exception, already applied: `_denomHi`/`_denomLo` are a pure function of `usdc`, computed in the
-    ///      constructor from the very value compared below, so the `usdc` line covers them. The DENOM() assert that
-    ///      follows makes that coverage explicit rather than implied, and would catch a change to the rendering
-    ///      itself (prefix, checksum casing) that a raw address comparison cannot see.
+    ///      The DENOM() assert below is not an immutable check: the denom is derived from `usdc` on every call, so
+    ///      the `usdc` line already covers the value. It is here to catch a change to the RENDERING (prefix, EIP-55
+    ///      casing) between the live impl and this build, which comparing raw addresses cannot see.
     function _assertInboundImmutablesMatch(address liveImpl) internal {
         _requireForwarderKind(liveImpl, "transmitter()", "InboundForwarder");
         InboundForwarder live = InboundForwarder(payable(liveImpl));

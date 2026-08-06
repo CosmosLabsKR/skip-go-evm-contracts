@@ -212,9 +212,9 @@ contract InboundForwarder is IInboundForwarder, Initializable {
     ///      lowercase rendering would name an asset that does not exist. `toChecksumHexString` arrived in
     ///      openzeppelin-contracts v5.1; before that bump the checksum was hand-rolled here.
     ///
-    ///      Rendered per call rather than cached in immutables. Caching costs ~20k gas per message, but mintAndRoute
-    ///      already spends 178k-355k rendering a realistic 200-500 byte memo through _bytesToHexString, so the saving
-    ///      is 5-10% of one line's cost — not worth carrying a fixed-width invariant on funds-critical state.
+    ///      Rendered per call rather than cached in immutables. Caching saves ~20k gas per message, but mintAndRoute
+    ///      already spends far more than that hex-encoding a realistic 200-500 byte memo, so the saving is a small
+    ///      fraction of one neighbouring line — not worth carrying a fixed-width invariant on funds-critical state.
     function DENOM() public view returns (string memory) {
         return string.concat("erc20:", Strings.toChecksumHexString(address(usdc)));
     }

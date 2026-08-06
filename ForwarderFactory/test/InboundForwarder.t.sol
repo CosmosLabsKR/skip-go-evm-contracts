@@ -186,7 +186,9 @@ contract InboundForwarderTest is Test {
         );
     }
 
-    /// @dev Mirror of InboundForwarder._bytesToHexString: 0x-prefixed lowercase hex.
+    /// @dev Independent reimplementation of the memo rendering the contract now gets from Strings.toHexString:
+    ///      0x-prefixed lowercase hex. Kept hand-written on purpose — an oracle that called the same library would
+    ///      pass no matter what that library did, and the IRIS listener depends on this exact representation.
     function _hex(bytes memory data) internal pure returns (string memory) {
         bytes16 sym = "0123456789abcdef";
         bytes memory out = new bytes(2 + data.length * 2);
