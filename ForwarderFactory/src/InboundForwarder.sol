@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import {Initializable} from "openzeppelin-contracts-upgradeable/proxy/utils/Initializable.sol";
+import {Initializable} from "openzeppelin-contracts/proxy/utils/Initializable.sol";
 import {IERC20} from "openzeppelin-contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "openzeppelin-contracts/token/ERC20/utils/SafeERC20.sol";
 import {Strings} from "openzeppelin-contracts/utils/Strings.sol";
@@ -105,8 +105,10 @@ contract InboundForwarder is IInboundForwarder, Initializable {
 
         // Field order/types MUST match IBCTransferRequested's listener ABI. sender = address(this): this forwarder is
         // the bank holder / MsgTransfer.sender, and the hook maps that address to the Injective bank account.
+        // The memo travels as lowercase 0x-prefixed hex (the IRIS hookData representation; empty memo -> "0x"), which
+        // is plain hex and NOT the EIP-55 casing DENOM() needs — Injective compares denoms byte-for-byte, memos not.
         emit IBCTransferRequested(
-            PORT, channelId, DENOM(), minted, address(this), receiver, _bytesToHexString(memo), timeout
+            PORT, channelId, DENOM(), minted, address(this), receiver, Strings.toHexString(memo), timeout
         );
         // Held USDC is left in place — the synchronous hook consumes it as the IBC MsgTransfer in this same tx.
     }
@@ -195,23 +197,6 @@ contract InboundForwarder is IInboundForwarder, Initializable {
         (, bytes memory inner) = abi.decode(hookData, (address, bytes));
         (channelId, receiver, memo) = abi.decode(inner, (string, string, bytes));
         if (bytes(channelId).length == 0 || bytes(receiver).length == 0) revert EmptyHookRoute();
-    }
-
-    /// @dev Lowercase, 0x-prefixed hex of `data` (matches the IRIS hookData representation). Empty → "0x".
-    ///      Deliberately separate from _erc20Denom's rendering: this is plain lowercase for memo passthrough, whereas
-    ///      _erc20Denom applies the EIP-55 checksum that case-sensitive Injective denoms require.
-    function _bytesToHexString(bytes memory data) private pure returns (string memory) {
-        bytes16 hexSymbols = "0123456789abcdef";
-        uint256 n = data.length;
-        bytes memory out = new bytes(2 + n * 2);
-        out[0] = "0";
-        out[1] = "x";
-        for (uint256 i = 0; i < n; ++i) {
-            uint8 b = uint8(data[i]);
-            out[2 + i * 2] = hexSymbols[b >> 4];
-            out[3 + i * 2] = hexSymbols[b & 0x0f];
-        }
-        return string(out);
     }
 
     function _toBytes32(address a) private pure returns (bytes32) {

@@ -69,6 +69,10 @@ library CCTPV2Message {
         return bytes32(message[NONCE_OFFSET:NONCE_OFFSET + 32]);
     }
 
+    /// @notice Deliberately unused on-chain — kept so the golden vector in test/CCTPV2Message.t.sol can pin
+    ///         BURN_TOKEN_OFFSET, which sits between the offsets that ARE load-bearing and would otherwise go
+    ///         unverified. Do not wire it into validation: `burnToken` is a SOURCE-domain address and can never
+    ///         equal this chain's `usdc` (see the warning on InboundForwarder._validateBinding).
     function _getBurnToken(bytes calldata message) internal pure returns (bytes32) {
         return bytes32(message[BURN_TOKEN_OFFSET:BURN_TOKEN_OFFSET + 32]);
     }

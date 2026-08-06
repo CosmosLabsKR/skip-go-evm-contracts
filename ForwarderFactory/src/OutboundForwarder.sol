@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import {Initializable} from "openzeppelin-contracts-upgradeable/proxy/utils/Initializable.sol";
+import {Initializable} from "openzeppelin-contracts/proxy/utils/Initializable.sol";
 import {IERC20} from "openzeppelin-contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "openzeppelin-contracts/token/ERC20/utils/SafeERC20.sol";
 
@@ -29,9 +29,11 @@ contract OutboundForwarder is IOutboundForwarder, Initializable {
     /// @notice Route identifier and fund owner / recovery recipient.
     address public sender;
     uint32 public destinationDomain;
-    // Intentionally `bool`, not InboundForwarder's uint256 1/2 pattern: it packs into slot 0 alongside sender +
-    // destinationDomain. Widening it would claim its own slot and shift the layout — forbidden under the beacon
-    // upgrade model, since every deployed proxy already holds this layout.
+    // Packs into slot 0 alongside sender + destinationDomain. Keep it that width: a wider type claims its own slot
+    // and shifts everything after it, which the beacon upgrade model forbids once proxies hold this layout.
+    // The width is a layout constraint, not a gas one — measured, `bool` packed, `uint256` in its own slot with
+    // 0/1, and the same with OZ's 1/2 priming all land within ~20 gas of each other, because the EIP-3529 refund
+    // cancels out the zero-to-nonzero write. Do not "optimise" between these shapes; only the layout matters.
     bool private _reentrant;
     bytes32 public mintRecipient;
 
