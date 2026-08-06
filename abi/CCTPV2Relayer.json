@@ -648,17 +648,6 @@
   },
   {
     "type": "error",
-    "name": "AddressInsufficientBalance",
-    "inputs": [
-      {
-        "name": "account",
-        "type": "address",
-        "internalType": "address"
-      }
-    ]
-  },
-  {
-    "type": "error",
     "name": "ERC1967InvalidImplementation",
     "inputs": [
       {
@@ -680,7 +669,7 @@
   },
   {
     "type": "error",
-    "name": "FailedInnerCall",
+    "name": "FailedCall",
     "inputs": []
   },
   {
