@@ -23,7 +23,7 @@ address constant USDC_INJECTIVE = 0xa00C59fF5a080D2b954d0c75e46E22a0c371235a;
 address constant PAYMENT_CONTRACT_INJECTIVE = address(0);
 
 // Relayer/Operator address
-address constant OPERATOR_INJECTIVE = 0xd706c3F4aD08F695ddC8a301a6a63B263a0A3Ac3;
+address constant OPERATOR_INJECTIVE = 0x257cac9aa58c17E09074d7089CA878167611fc00;
 
 // Injective Testnet
 
@@ -37,7 +37,7 @@ address constant USDC_INJECTIVE_TESTNET = 0x0C382e685bbeeFE5d3d9C29e29E341fEE8E8
 address constant PAYMENT_CONTRACT_INJECTIVE_TESTNET = 0x364e4b2C10F9c3409C40289B98BfA5590603C804;
 
 // Relayer/Operator address
-address constant OPERATOR_INJECTIVE_TESTNET = 0xd706c3F4aD08F695ddC8a301a6a63B263a0A3Ac3;
+address constant OPERATOR_INJECTIVE_TESTNET = 0x257cac9aa58c17E09074d7089CA878167611fc00;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Inbound (CCTP v2 receive → Injective IBC) config
