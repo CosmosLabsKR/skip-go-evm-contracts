@@ -247,26 +247,13 @@ contract InboundForwarder is IInboundForwarder, Initializable {
         return string(abi.encodePacked(_denomHi, _denomLo));
     }
 
-    /// @dev Renders `erc20:0x<addr>` with the EIP-55 mixed-case checksum (Injective bank denoms are case-sensitive).
+    /// @dev Renders `erc20:0x<addr>` with the EIP-55 mixed-case checksum. Injective derives this denom Go-side as
+    ///      "erc20:" + common.Address.Hex(), which is EIP-55, and the bank module compares denoms byte-for-byte —
+    ///      a lowercase rendering would name a denom that does not exist. `toChecksumHexString` arrived in
+    ///      openzeppelin-contracts v5.1; before that bump this was hand-rolled here.
     ///      Constructor-only: the result is cached in `_denomHi`/`_denomLo`, so this never runs on a routing path.
     function _erc20Denom(address token) private pure returns (string memory) {
-        bytes memory hexStr = bytes(Strings.toHexString(token)); // "0x" + 40 lowercase hex chars
-        // EIP-55 hashes the 40 lowercase hex chars (without the "0x"). Copy them out to hash, then fix case in place.
-        bytes memory lower40 = new bytes(40);
-        for (uint256 i = 0; i < 40; ++i) {
-            lower40[i] = hexStr[2 + i];
-        }
-        bytes32 hash = keccak256(lower40);
-        for (uint256 i = 0; i < 40; ++i) {
-            uint8 c = uint8(lower40[i]);
-            if (c >= 0x61 && c <= 0x66) {
-                // 'a'..'f': uppercase when the matching hash nibble >= 8 (EIP-55)
-                uint8 hashByte = uint8(hash[i / 2]);
-                uint8 nibble = (i % 2 == 0) ? (hashByte >> 4) : (hashByte & 0x0f);
-                if (nibble >= 8) hexStr[2 + i] = bytes1(c - 0x20);
-            }
-        }
-        return string.concat("erc20:", string(hexStr));
+        return string.concat("erc20:", Strings.toChecksumHexString(token));
     }
 
     /// @notice Reject direct native transfers; this forwarder only handles ERC20/bank USDC.

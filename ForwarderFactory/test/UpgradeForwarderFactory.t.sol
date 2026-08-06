@@ -141,8 +141,19 @@ contract UpgradeForwarderFactoryTest is Test {
     // tautological. So the expected value is pinned as a LITERAL here. If this fails, the build config changed —
     // that is safe ONLY while no factory is live. If one is, the change must be reverted or the factory redeployed.
     // Regenerate with: console2.logBytes32(keccak256(type(BeaconProxy).creationCode))
+    // Regenerated 2026-08-06 for the openzeppelin-contracts v5.0.0 -> v5.6.1 bump, which also forced
+    // evm_version shanghai -> cancun (OZ Strings -> Bytes uses `mcopy`). Both knobs move this hash independently.
+    // Safe to repin here only because the stable-release factory is being deployed fresh; no live factory is kept.
+    // Previous value (OZ 5.0.0 + shanghai): 0xf420d459616cccfa040beb52c4b15054a0d9ef8f3415966d15bf73c50206e728
+    //
+    // The list above is not exhaustive: solc also embeds `settings.remappings` in the metadata blob appended to
+    // creationCode, so the REMAPPING LIST moves this hash too. That list used to be partly auto-detected by
+    // scanning lib/, which made the value depend on which nested submodules happened to be checked out locally —
+    // one commit produced three different hashes that way. foundry.toml now sets auto_detect_remappings = false
+    // so the list comes only from remappings.txt; adding an entry there moves the address space just like a
+    // compiler flag does.
     bytes32 internal constant BEACON_PROXY_CREATION_CODE_HASH =
-        0xf420d459616cccfa040beb52c4b15054a0d9ef8f3415966d15bf73c50206e728;
+        0x8cc7e0f45ee8c5703c059388032f932c7af4fa6ebae8cbe10ea167f0384d1780;
 
     function test_BeaconProxyCreationCode_FrozenAgainstGoldenVector() public {
         assertEq(
