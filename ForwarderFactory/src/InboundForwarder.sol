@@ -45,11 +45,12 @@ contract InboundForwarder is IInboundForwarder, Initializable {
     uint32 public immutable INJECTIVE_DOMAIN; // CCTP destination domain (binding check)
 
     // ── per-route (proxy storage; salt inputs = the stable final intent) ──
-    address public sender; // source-EVM burn depositor (0x)        (route key #1)
+    address public sender; // route key #1 — namespace, not a verified claim (see _validateBinding)
     string public destinationChainId; // final destination chain id (route key #2 · address-engraved)
     string public destinationReceiver; // final-hop recipient        (route key #3 · address-engraved)
     /// @notice Refund sink for both mintAndRefund and refund(). Fixed to `sender` at initialize and never writable
-    ///         afterwards (D-20), so refunds can only ever reach the source burn depositor.
+    ///         afterwards (D-20). Note this is the route's `sender`, not the burn's actual depositor — those can
+    ///         differ now that messageSender is unbound, so a refund follows the route, not the origin.
     address public refundRecipient;
 
     uint256 private _reentrant;
@@ -166,9 +167,17 @@ contract InboundForwarder is IInboundForwarder, Initializable {
         if (minted == 0) revert NothingMinted();
     }
 
-    /// @dev G4 binding: the message must mint to THIS forwarder, on the Injective domain, from the committed source
-    ///      depositor. mintRecipient == address(this) — itself CREATE2(salt(sender, destinationChainId,
-    ///      destinationReceiver)) — is what commits the final intent. sourceDomain is excluded from the key (D-19).
+    /// @dev G4 binding: the message must mint to THIS forwarder, on the Injective domain. mintRecipient ==
+    ///      address(this) — itself CREATE2(salt(sender, destinationChainId, destinationReceiver)) — is what commits
+    ///      the final intent and keeps a message on its route.
+    ///
+    ///      burn.messageSender is deliberately NOT compared against `sender`. It is bytes32, and non-EVM source
+    ///      domains (Solana, Sui, Aptos) use all 32 bytes, so matching it against a 20-byte address would reject
+    ///      every message from them. Dropping it makes `sender` a route key rather than an enforced claim: anyone
+    ///      can burn to this forwarder, and those funds follow the route's committed destination. Nothing the route
+    ///      owner holds is at risk — the destination is fixed by the address — but provenance is no longer proven
+    ///      on-chain, and D-19 (sourceDomain left out of the salt because the sender field covered it) no longer
+    ///      has that backstop.
     ///
     ///      ⚠️ Do NOT add a `burnToken == usdc` check. `burnToken` is a SOURCE-domain address, so it can never equal
     ///      this chain's `usdc` and the check would reject every legitimate message. Token identity is already

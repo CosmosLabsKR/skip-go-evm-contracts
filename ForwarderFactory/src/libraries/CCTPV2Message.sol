@@ -79,9 +79,9 @@ library CCTPV2Message {
         return bytes32(message[MINT_RECIPIENT_OFFSET:MINT_RECIPIENT_OFFSET + 32]);
     }
 
-    /// @notice Burn-body messageSender = the address that called depositForBurn on the source chain (the per-route
-    ///         source depositor). InboundForwarder binds this against its `sender` route key; what the CREATE2 salt
-    ///         commits to is the forwarder's concern (see InboundForwarder._validateBinding), not this library's.
+    /// @notice Burn-body messageSender = whoever called depositForBurn on the source chain, as bytes32 (non-EVM
+    ///         domains use all 32 bytes). Unused on-chain — InboundForwarder no longer binds it; kept so the golden
+    ///         vector pins MESSAGE_SENDER_OFFSET. See the note on InboundForwarder._validateBinding.
     function _getMessageSender(bytes calldata message) internal pure returns (bytes32) {
         return bytes32(message[MESSAGE_SENDER_OFFSET:MESSAGE_SENDER_OFFSET + 32]);
     }

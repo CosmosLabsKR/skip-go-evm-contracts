@@ -483,14 +483,17 @@ contract InboundForwarderTest is Test {
         fwd.mintAndRoute(message, "");
     }
 
-    function test_RejectsWrongSender() public {
+    /// @dev burn.messageSender is deliberately NOT bound to the route's `sender`: it is bytes32 and non-EVM source
+    ///      domains (Solana, Sui, Aptos) fill all 32 bytes, so a comparison against a 20-byte address would reject
+    ///      every message from them. mintRecipient == address(this) is what keeps a message on its route.
+    function test_AcceptsForeignMessageSender() public {
         bytes memory message = _buildMessage(
-            INJ_DOMAIN, keccak256("n7"), bytes32(uint256(uint160(address(0x9999)))),
+            INJ_DOMAIN, keccak256("n7"), keccak256("a-32-byte-solana-style-depositor"),
             address(usdc), address(fwd), 1_000_000, _validHook(bytes("m"))
         );
         vm.prank(operator);
-        vm.expectRevert(IInboundForwarder.WrongSender.selector);
         fwd.mintAndRoute(message, "");
+        assertEq(usdc.balanceOf(address(fwd)), 1_000_000, "routed regardless of source depositor");
     }
 
     // timeout is computed on-chain (now + 1 day, ns), never sourced from hookData → the old RejectsZeroTimeout case

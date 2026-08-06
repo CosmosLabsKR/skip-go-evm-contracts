@@ -476,11 +476,6 @@
   },
   {
     "type": "error",
-    "name": "WrongSender",
-    "inputs": []
-  },
-  {
-    "type": "error",
     "name": "ZeroAddress",
     "inputs": []
   },
