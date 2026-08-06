@@ -384,11 +384,6 @@
   },
   {
     "type": "error",
-    "name": "DenomLengthUnexpected",
-    "inputs": []
-  },
-  {
-    "type": "error",
     "name": "EmptyHookRoute",
     "inputs": []
   },

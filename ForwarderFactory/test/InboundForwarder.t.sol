@@ -6,7 +6,6 @@ import {ERC20} from "openzeppelin-contracts/token/ERC20/ERC20.sol";
 import {UpgradeableBeacon} from "openzeppelin-contracts/proxy/beacon/UpgradeableBeacon.sol";
 import {ERC1967Proxy} from "openzeppelin-contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {Create2} from "openzeppelin-contracts/utils/Create2.sol";
-import {Strings} from "openzeppelin-contracts/utils/Strings.sol";
 
 import {InboundForwarder} from "../src/InboundForwarder.sol";
 import {InboundForwarderFactory} from "../src/InboundForwarderFactory.sol";
@@ -388,16 +387,9 @@ contract InboundForwarderTest is Test {
         assertEq(testnetFwd.DENOM(), "erc20:0x0C382e685bbeeFE5d3d9C29e29E341fEE8E84C5d");
     }
 
-    /// @dev The two vectors above pin the FORMAT; this pins the CACHING. DENOM() no longer renders on demand — the
-    ///      constructor splits the string across two immutable words — so any off-by-one in that split would survive
-    ///      a fixed-address test that happened to land on clean bytes. Comparing against the derivation itself, over
-    ///      arbitrary addresses, is what actually holds the cache to the formula.
-    function testFuzz_DenomCacheMatchesDerivation(address token) public {
-        vm.assume(token != address(0));
-        InboundForwarder probe = new InboundForwarder(token, address(transmitter), operator, INJ_DOMAIN);
-        assertEq(probe.DENOM(), string.concat("erc20:", Strings.toChecksumHexString(token)));
-        assertEq(bytes(probe.DENOM()).length, 48, "denom width the immutable split depends on");
-    }
+    // No fuzz companion here on purpose: DENOM() renders straight from `usdc`, so comparing it against
+    // "erc20:" ++ toChecksumHexString(usdc) would restate the implementation and could not fail. The two hardcoded
+    // vectors above are the real check — they pin the output against strings this repo does not compute.
 
     // ── T2: mintAndRefund (no hookData decode on the refund path) ──
     function test_MintAndRefund() public {

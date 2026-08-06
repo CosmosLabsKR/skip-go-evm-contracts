@@ -42,13 +42,6 @@ contract InboundForwarder is IInboundForwarder, Initializable {
     address public immutable operator; // single trusted entity
     uint32 public immutable INJECTIVE_DOMAIN; // CCTP destination domain (binding check)
 
-    /// @dev The bank denom string, rendered once in the constructor and held as two immutable words. It is exactly
-    ///      48 bytes ("erc20:" 6 + "0x" 2 + 40 hex chars), so it packs into bytes32 + bytes16 with no slack.
-    ///      Solidity has no immutable string, but immutables live in the impl's bytecode, which delegatecall executes
-    ///      — unlike storage, they are readable through the beacon proxy (`usdc` above relies on the same property).
-    bytes32 private immutable _denomHi;
-    bytes16 private immutable _denomLo;
-
     // ── per-route (proxy storage; salt inputs = the stable final intent) ──
     address public sender; // source-EVM burn depositor (0x)        (route key #1)
     string public destinationChainId; // final destination chain id (route key #2 · address-engraved)
@@ -79,27 +72,6 @@ contract InboundForwarder is IInboundForwarder, Initializable {
         transmitter = IReceiver(transmitter_);
         operator = operator_;
         INJECTIVE_DOMAIN = injectiveDomain_;
-
-        // Render the denom once here rather than on every mintAndRoute, then split it across the two immutable
-        // words. The 48-byte length is load-bearing — it is what makes bytes32 ++ bytes16 hold the string exactly —
-        // so assert it rather than trust it: a longer rendering would be silently truncated, and the resulting
-        // denom would name a bank asset that does not exist on Injective. Constructor-only, so a wrong prefix or a
-        // changed upstream hex format costs a failed deployment instead of stranded funds.
-        bytes memory d = bytes(_erc20Denom(usdc_));
-        if (d.length != 48) revert DenomLengthUnexpected();
-        // Assembled byte by byte instead of with two mload's: this runs once at deploy time, so the bounds-checked
-        // form costs nothing and keeps the contract free of any memory-safety argument.
-        uint256 hi;
-        uint256 lo;
-        for (uint256 i = 0; i < 32; ++i) {
-            hi |= uint256(uint8(d[i])) << (248 - i * 8);
-        }
-        for (uint256 i = 0; i < 16; ++i) {
-            lo |= uint256(uint8(d[32 + i])) << (248 - i * 8);
-        }
-        _denomHi = bytes32(hi);
-        _denomLo = bytes16(bytes32(lo)); // keeps the top 16 bytes, where the loop above placed them
-
         _disableInitializers();
     }
 
@@ -248,19 +220,18 @@ contract InboundForwarder is IInboundForwarder, Initializable {
 
     /// @notice Injective bank denom of the minted USDC: `erc20:<EIP-55 checksummed usdc address>`.
     /// @dev Derived from the immutable `usdc` rather than stored, so it is provably the token whose balance delta
-    ///      `_receiveAndValidate` measured as `minted` — never the burn body's source-domain `burnToken`. The
-    ///      rendering happens once in the constructor; this only reassembles the two immutable words.
+    ///      `_receiveAndValidate` measured as `minted` — never the burn body's source-domain `burnToken`.
+    ///
+    ///      The checksum casing is not cosmetic: Injective builds this denom Go-side as
+    ///      "erc20:" + common.Address.Hex(), which is EIP-55, and the bank module compares denoms byte-for-byte, so a
+    ///      lowercase rendering would name an asset that does not exist. `toChecksumHexString` arrived in
+    ///      openzeppelin-contracts v5.1; before that bump the checksum was hand-rolled here.
+    ///
+    ///      Rendered per call rather than cached in immutables. Caching costs ~20k gas per message, but mintAndRoute
+    ///      already spends 178k-355k rendering a realistic 200-500 byte memo through _bytesToHexString, so the saving
+    ///      is 5-10% of one line's cost — not worth carrying a fixed-width invariant on funds-critical state.
     function DENOM() public view returns (string memory) {
-        return string(abi.encodePacked(_denomHi, _denomLo));
-    }
-
-    /// @dev Renders `erc20:0x<addr>` with the EIP-55 mixed-case checksum. Injective derives this denom Go-side as
-    ///      "erc20:" + common.Address.Hex(), which is EIP-55, and the bank module compares denoms byte-for-byte —
-    ///      a lowercase rendering would name a denom that does not exist. `toChecksumHexString` arrived in
-    ///      openzeppelin-contracts v5.1; before that bump this was hand-rolled here.
-    ///      Constructor-only: the result is cached in `_denomHi`/`_denomLo`, so this never runs on a routing path.
-    function _erc20Denom(address token) private pure returns (string memory) {
-        return string.concat("erc20:", Strings.toChecksumHexString(token));
+        return string.concat("erc20:", Strings.toChecksumHexString(address(usdc)));
     }
 
     /// @notice Reject direct native transfers; this forwarder only handles ERC20/bank USDC.
