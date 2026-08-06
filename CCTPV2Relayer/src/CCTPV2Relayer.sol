@@ -45,7 +45,9 @@ contract CCTPV2Relayer is ICCTPV2Relayer, Initializable, UUPSUpgradeable, Ownabl
     }
 
     function initialize(address usdc_, address messenger_, address transmitter_) external initializer {
-        __UUPSUpgradeable_init();
+        // No __UUPSUpgradeable_init(): openzeppelin-contracts v5.5 stopped transpiling UUPSUpgradeable (it holds no
+        // storage), so the upgradeable package now just re-exports the base contract and the initializer is gone.
+        // It was an empty no-op in v5.0.0, so dropping it changes nothing about the initialized state.
         __Ownable2Step_init();
 
         if (usdc_ == address(0)) revert ZeroAddress();
