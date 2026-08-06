@@ -177,7 +177,6 @@ contract InboundForwarder is IInboundForwarder, Initializable {
         message.validateLength();
         if (message._getDestinationDomain() != INJECTIVE_DOMAIN) revert WrongDestination();
         if (message._getMintRecipient() != _toBytes32(address(this))) revert WrongRecipient();
-        if (message._getMessageSender() != _toBytes32(sender)) revert WrongSender();
     }
 
     /// @dev Decode the attestation-backed hookData into the per-transfer IBC route (D-2/D-3):
