@@ -20,10 +20,10 @@ address constant USDC_INJECTIVE = 0xa00C59fF5a080D2b954d0c75e46E22a0c371235a;
 // ⚠️ address(0) placeholder until the real CCTPV2Relayer is deployed on Injective mainnet.
 //    A mainnet (1776) deploy reverts with ZeroAddress while this is unset — an intentional safeguard.
 //    testnet (1439) deploys are unaffected (they use PAYMENT_CONTRACT_INJECTIVE_TESTNET).
-address constant PAYMENT_CONTRACT_INJECTIVE = address(0);
+address constant PAYMENT_CONTRACT_INJECTIVE = 0x400BB58033a7763A834199190B68F66A2661aE73;
 
 // Relayer/Operator address
-address constant OPERATOR_INJECTIVE = 0x257cac9aa58c17E09074d7089CA878167611fc00;
+address constant OPERATOR_INJECTIVE = 0xfc05aD74C6FE2e7046E091D6Ad4F660D2A159762;
 
 // Injective Testnet
 
