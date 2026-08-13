@@ -140,7 +140,7 @@ contract TransitIntegrationTest is Test {
         // Production deployment order: executor proxy first, then the forwarder impl bound to it, then the factory.
         TransitExecutor executorImpl = new TransitExecutor(address(usdc), address(transmitter), operator);
         executor = TransitExecutor(
-            address(new ERC1967Proxy(address(executorImpl), abi.encodeCall(TransitExecutor.initialize, (owner))))
+            address(new ERC1967Proxy(address(executorImpl), abi.encodeCall(TransitExecutor.initialize, (owner, address(0)))))
         );
 
         TransitForwarder fwdImpl = new TransitForwarder(

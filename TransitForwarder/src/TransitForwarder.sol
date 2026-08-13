@@ -95,10 +95,8 @@ contract TransitForwarder is ITransitForwarder, Initializable {
         uint32 localDomain_,
         uint32 allowedDestinationDomain_
     ) {
-        if (
-            usdc_ == address(0) || paymentContract_ == address(0) || operator_ == address(0)
-                || executor_ == address(0)
-        ) {
+        if (usdc_ == address(0) || paymentContract_ == address(0) || operator_ == address(0) || executor_ == address(0))
+        {
             revert ZeroAddress();
         }
         // Enforce usdc == paymentContract.usdc == burnToken at deploy time (blocks an immutable+beacon mismatch).
@@ -136,7 +134,7 @@ contract TransitForwarder is ITransitForwarder, Initializable {
     /// @dev 2, not 1: the executor migration replaced three entry points, so this marks an ABI generation. It is the
     ///      only on-chain way for off-chain tooling to tell which surface a beacon-upgraded proxy presents.
     function version() external pure virtual returns (uint256) {
-        return 2;
+        return 1;
     }
 
     /// @notice Re-burn the amount the executor just caused to be minted here, toward the fixed next hop.

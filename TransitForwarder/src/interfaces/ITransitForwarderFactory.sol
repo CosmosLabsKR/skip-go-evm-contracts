@@ -53,4 +53,7 @@ interface ITransitForwarderFactory {
         returns (address forwarder);
 
     function upgradeForwarderImplementation(address newImplementation) external;
+
+    /// @notice The TransitExecutor every forwarder from this factory answers to. Frozen at initialize.
+    function executor() external view returns (address);
 }

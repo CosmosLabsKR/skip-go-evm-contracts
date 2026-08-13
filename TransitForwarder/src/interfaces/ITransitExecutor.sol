@@ -95,9 +95,10 @@ interface ITransitExecutor {
 
     // ── State-changing (owner-only) ──
 
-    /// @notice Point the executor at the factory it creates missing forwarders with.
-    /// @dev Storage, not an immutable: the factory cannot exist yet at construction. Re-settable — a factory
-    ///      redeployment is a real scenario.
+    /// @notice Point the executor at the factory it creates missing forwarders with. Also settable at initialize,
+    ///         for deployment orders where the factory already exists.
+    /// @dev Storage, not an immutable: in the canonical order the factory cannot exist yet, and it must stay
+    ///      replaceable — a factory redeployment is a real scenario.
     function setFactory(address factory_) external;
 
     // ── Views ──

@@ -74,11 +74,21 @@ contract TransitExecutor is ITransitExecutor, Initializable, UUPSUpgradeable, Ow
         _disableInitializers();
     }
 
-    function initialize(address owner_) external initializer {
+    /// @param factory_ The TransitForwarderFactory, or address(0) to wire it later with setFactory.
+    /// @dev ⚠️ In the canonical deployment order this MUST be address(0): the factory needs a forwarder
+    ///      implementation, that implementation needs this contract's address, and this contract must therefore
+    ///      exist first. The parameter is here for the orders where the factory IS already known — a redeployment,
+    ///      or a flow that pre-computes this proxy's address — so those do not need a second transaction.
+    ///      Not a constructor immutable for the same reason, plus the factory must stay replaceable.
+    function initialize(address owner_, address factory_) external initializer {
         if (owner_ == address(0)) revert ZeroAddress();
         // Do NOT swap for a bare __Ownable2Step_init() — it is a no-op and would leave this ownerless, permanently
         // bricking every onlyOwner upgrade.
         __Ownable_init(owner_);
+        if (factory_ != address(0)) {
+            factory = factory_;
+            emit FactorySet(address(0), factory_);
+        }
     }
 
     function version() external pure virtual returns (uint256) {

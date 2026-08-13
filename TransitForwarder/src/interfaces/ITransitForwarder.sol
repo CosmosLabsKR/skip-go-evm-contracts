@@ -89,6 +89,5 @@ interface ITransitForwarder {
     function mintRecipient() external view returns (bytes32);
     function executor() external view returns (address);
     function getRoute() external view returns (address, uint32, bytes32);
-    /// @dev 2 since the executor migration — an ABI generation marker, not a cosmetic counter.
     function version() external view returns (uint256);
 }

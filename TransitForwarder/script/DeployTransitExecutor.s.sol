@@ -20,10 +20,15 @@ contract DeployTransitExecutorScript is BaseScript {
         require(owner != address(0), "TRANSIT_EXECUTOR_OWNER is the zero address");
         console2.log("Owner will be:", owner);
 
+        // Normally zero — the factory does not exist yet at this point. Set it here only when redeploying against
+        // a factory that is already live; otherwise DeployTransitFactory wires it with setFactory afterwards.
+        address factoryAtInit = vm.envOr("TRANSIT_FORWARDER_FACTORY_PROXY", address(0));
+
         vm.startBroadcast();
 
         TransitExecutor impl = _deployTransitExecutorImpl();
-        ERC1967Proxy proxy = new ERC1967Proxy(address(impl), abi.encodeCall(TransitExecutor.initialize, (owner)));
+        ERC1967Proxy proxy =
+            new ERC1967Proxy(address(impl), abi.encodeCall(TransitExecutor.initialize, (owner, factoryAtInit)));
 
         vm.stopBroadcast();
 
@@ -41,6 +46,7 @@ contract DeployTransitExecutorScript is BaseScript {
         console2.log("TRANSIT_EXECUTOR_PROXY (permanent, use this everywhere):", address(proxy));
         console2.log("=========================================================");
         console2.log("Owner:", owner);
+        if (factoryAtInit != address(0)) console2.log("Factory wired at init:", factoryAtInit);
         console2.log("Next: set TRANSIT_EXECUTOR_PROXY, then run DeployTransitFactory");
         console2.log("      (that script calls executor.setFactory to close the cycle - run it as the owner above).");
         console2.log("Also: inject this same address as destinationCaller on the SOURCE side, or the griefing");

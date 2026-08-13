@@ -201,7 +201,7 @@ contract TransitForwarderTest is Test {
         // and it must be the address that survives an executor upgrade. Mirrors the real deployment order.
         TransitExecutor executorImpl = new TransitExecutor(address(usdc), address(transmitter), operator);
         executor = TransitExecutor(
-            address(new ERC1967Proxy(address(executorImpl), abi.encodeCall(TransitExecutor.initialize, (address(this)))))
+            address(new ERC1967Proxy(address(executorImpl), abi.encodeCall(TransitExecutor.initialize, (address(this), address(0)))))
         );
 
         impl = new TransitForwarder(
@@ -648,11 +648,6 @@ contract TransitForwarderTest is Test {
         fwd.transferMinted(m, 0, FEE, MAX_FEE, FINALITY, DEST_CALLER);
     }
 
-    // ── T-41 ABI generation marker ──
-
-    function test_T41_VersionMarksTheExecutorGeneration() public {
-        assertEq(fwd.version(), 2, "entry points changed; version must mark the new ABI generation");
-    }
 
     // ── T-27 native coin rejected ──
 

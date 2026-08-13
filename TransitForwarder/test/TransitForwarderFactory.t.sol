@@ -55,10 +55,8 @@ contract MockRelayerStub is ICCTPV2Relayer {
 contract TransitForwarderV2 is TransitForwarder {
     constructor(address u, address p, address o, address e, uint32 l, uint32 dst) TransitForwarder(u, p, o, e, l, dst) {}
 
-    /// @dev 3, not 2: the shipped implementation already reports 2 for the executor ABI generation, so the marker
-    ///      this test uses to prove logic was swapped has to sit above it.
     function version() external pure override returns (uint256) {
-        return 3;
+        return 2;
     }
 }
 
@@ -188,13 +186,13 @@ contract TransitForwarderFactoryTest is Test {
 
     function test_TF7_BeaconUpgradeKeepsAddressesSwapsLogic() public {
         address fwd = factory.createForwarder(routeSender, DEST_DOMAIN, mintRecipient);
-        assertEq(TransitForwarder(payable(fwd)).version(), 2, "baseline is the executor generation");
+        assertEq(TransitForwarder(payable(fwd)).version(), 1);
 
         address beaconBefore = factory.beacon();
         factory.upgradeForwarderImplementation(address(_newImpl()));
 
         assertEq(factory.beacon(), beaconBefore, "beacon address must not change");
-        assertEq(TransitForwarder(payable(fwd)).version(), 3, "deployed forwarder must see new logic");
+        assertEq(TransitForwarder(payable(fwd)).version(), 2, "deployed forwarder must see new logic");
 
         // Route storage survives the logic swap.
         (address s, uint32 d, bytes32 r) = TransitForwarder(payable(fwd)).getRoute();
@@ -212,6 +210,25 @@ contract TransitForwarderFactoryTest is Test {
     }
 
     // ── T-F8 factory UUPS upgrade ──
+
+    /// @dev The factory adopts its forwarders' executor at initialize and never lets it move. That address is baked
+    ///      into already-burned messages' destinationCaller, so an impl bound elsewhere would strand every route and
+    ///      every in-flight message at once — this is the on-chain guard the deploy script alone used to provide.
+    function test_TF7b_ExecutorIsAdoptedAndFrozen() public {
+        assertEq(factory.executor(), EXECUTOR, "adopted from the first implementation");
+
+        TransitForwarderV2 sameExecutor =
+            new TransitForwarderV2(address(usdc), address(relayer), operator, EXECUTOR, LOCAL_DOMAIN, DEST_DOMAIN);
+        factory.upgradeForwarderImplementation(address(sameExecutor)); // must not revert
+
+        TransitForwarderV2 otherExecutor = new TransitForwarderV2(
+            address(usdc), address(relayer), operator, address(0xBADE8EC), LOCAL_DOMAIN, DEST_DOMAIN
+        );
+        vm.expectRevert(TransitForwarderFactory.ExecutorMismatch.selector);
+        factory.upgradeForwarderImplementation(address(otherExecutor));
+
+        assertEq(factory.executor(), EXECUTOR, "still frozen");
+    }
 
     function test_TF8_FactoryUUPSUpgradeKeepsBeaconAndAddresses() public {
         address fwd = factory.createForwarder(routeSender, DEST_DOMAIN, mintRecipient);

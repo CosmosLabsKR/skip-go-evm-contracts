@@ -142,6 +142,8 @@ contract TransitExecutorTest is Test {
     uint256 constant FEE = 10_000;
     uint256 constant MAX_FEE = 500;
     uint32 constant FINALITY = 2000;
+
+    event FactorySet(address indexed previous, address indexed current);
     /// @dev Non-zero on every path: the executor rejects an unset destinationCaller.
     bytes32 constant DEST_CALLER = bytes32(uint256(0xCA11E5));
 
@@ -153,7 +155,7 @@ contract TransitExecutorTest is Test {
 
         TransitExecutor impl = new TransitExecutor(address(usdc), address(transmitter), operator);
         executor =
-            TransitExecutor(address(new ERC1967Proxy(address(impl), abi.encodeCall(TransitExecutor.initialize, (owner)))));
+            TransitExecutor(address(new ERC1967Proxy(address(impl), abi.encodeCall(TransitExecutor.initialize, (owner, address(0))))));
     }
 
     // ── message builder (CCTP v2 offsets) ──
@@ -436,7 +438,7 @@ contract TransitExecutorTest is Test {
     function test_X17_ForwarderCannotReenter() public {
         TransitExecutor impl = new TransitExecutor(address(usdc), address(transmitter), address(forwarder));
         TransitExecutor reentrant = TransitExecutor(
-            address(new ERC1967Proxy(address(impl), abi.encodeCall(TransitExecutor.initialize, (owner))))
+            address(new ERC1967Proxy(address(impl), abi.encodeCall(TransitExecutor.initialize, (owner, address(0)))))
         );
         forwarder.setReenterTarget(address(reentrant));
 
@@ -479,18 +481,36 @@ contract TransitExecutorTest is Test {
     function test_X19a_ImplementationCannotBeInitialized() public {
         TransitExecutor impl = new TransitExecutor(address(usdc), address(transmitter), operator);
         vm.expectRevert(Initializable.InvalidInitialization.selector);
-        impl.initialize(owner);
+        impl.initialize(owner, address(0));
+    }
+
+    /// @dev initialize accepts the factory for deployment orders where it already exists. In the canonical order it
+    ///      cannot — the factory needs a forwarder impl, which needs this contract — so zero is the normal value and
+    ///      setFactory wires it afterwards.
+    function test_X19e_InitializeCanWireTheFactory() public {
+        TransitExecutor impl = new TransitExecutor(address(usdc), address(transmitter), operator);
+        address fac = address(0xFAC7);
+
+        vm.expectEmit(true, true, false, true);
+        emit FactorySet(address(0), fac);
+        TransitExecutor wired = TransitExecutor(
+            address(new ERC1967Proxy(address(impl), abi.encodeCall(TransitExecutor.initialize, (owner, fac))))
+        );
+        assertEq(wired.factory(), fac);
+
+        // ...and zero leaves it unset, exactly as the canonical order needs.
+        assertEq(executor.factory(), address(0));
     }
 
     function test_X19b_ProxyCannotBeReinitialized() public {
         vm.expectRevert(Initializable.InvalidInitialization.selector);
-        executor.initialize(address(0xFEED));
+        executor.initialize(address(0xFEED), address(0));
     }
 
     function test_X19c_InitializeRejectsZeroOwner() public {
         TransitExecutor impl = new TransitExecutor(address(usdc), address(transmitter), operator);
         vm.expectRevert(ITransitExecutor.ZeroAddress.selector);
-        new ERC1967Proxy(address(impl), abi.encodeCall(TransitExecutor.initialize, (address(0))));
+        new ERC1967Proxy(address(impl), abi.encodeCall(TransitExecutor.initialize, (address(0), address(0))));
     }
 
     function test_X19d_ConstructorRejectsZeroAddresses() public {

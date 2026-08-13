@@ -51,13 +51,22 @@ contract TransitForwarderFactory is
     ///         test/UpgradeTransitFactory.t.sol catches that before it reaches a live factory.
     bytes32 public beaconInitCodeHash;
 
+    /// @notice The TransitExecutor every forwarder this factory produces answers to.
+    /// @dev Read off the first implementation at initialize and then FROZEN: the executor address is baked into
+    ///      already-burned messages' destinationCaller and can never be replaced, so a forwarder impl bound to a
+    ///      different one would orphan every route the moment it was installed. upgradeForwarderImplementation
+    ///      refuses such an impl — this is the on-chain half of the deploy script's _assertIsProxy check.
+    address public executor;
+
     // append-only: add new state variables before __gap and shrink __gap (never prepend). Block = 50 slots.
-    uint256[48] private __gap;
+    uint256[47] private __gap;
 
     /// @dev impl passed to initialize was the zero address.
     error ZeroImplementation();
     /// @dev The CREATE2 deploy did not land on the predicted address (initCodeHash/salt/deployer divergence).
     error AddressMismatch();
+    /// @notice The implementation being installed answers to a different executor than this factory's forwarders.
+    error ExecutorMismatch();
 
     constructor() {
         _disableInitializers();
@@ -72,6 +81,8 @@ contract TransitForwarderFactory is
         __Ownable_init(msg.sender);
         // The factory (proxy) is the beacon owner.
         beacon = address(new UpgradeableBeacon(forwarderImplementation, address(this)));
+        // Adopt the implementation's executor as this factory's invariant. Every later impl must match it.
+        executor = TransitForwarder(payable(forwarderImplementation)).executor();
         // Must match the empty-data BeaconProxy initcode tail abi.encode(beacon, "") for the address to line up.
         beaconInitCodeHash = keccak256(abi.encodePacked(type(BeaconProxy).creationCode, abi.encode(beacon, bytes(""))));
     }
@@ -147,6 +158,10 @@ contract TransitForwarderFactory is
     ///         operator) in bulk. Applies to forwarders deployed later too — the BeaconProxy initcode holds only the
     ///         beacon address, never the impl.
     function upgradeForwarderImplementation(address newImplementation) external onlyOwner {
+        // The one thing a beacon upgrade must never change. Every deployed forwarder gates its transit entry point
+        // on this address, and it is also the destinationCaller of messages already burned on other chains — so an
+        // impl bound elsewhere would silently strand every route and every in-flight message.
+        if (TransitForwarder(payable(newImplementation)).executor() != executor) revert ExecutorMismatch();
         UpgradeableBeacon(beacon).upgradeTo(newImplementation);
         emit ForwarderImplementationUpgraded(newImplementation);
     }
