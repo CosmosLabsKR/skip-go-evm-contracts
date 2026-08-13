@@ -28,11 +28,14 @@ update-abis:
 #   SETTINGS  — foundry.toml's build settings feed type(BeaconProxy).creationCode, so they must match the sibling for
 #               the shared golden vector to stay valid. Only the settings, never the comments: the comments must
 #               differ (they describe different target chains).
+#
+#               NOT copied: anything mint-side. The siblings receive CCTP v2; Transit's mint leg is CCTP v1, a
+#               different Circle contract with an unrelated message layout. So CCTPV1Message.sol is original code
+#               with its own golden vector, and IReceiver.sol is no longer frozen against the v2 sibling — the
+#               function signature happens to match, but freezing it would force its documentation to describe the
+#               wrong protocol. The burn-side copy (ICCTPV2Relayer.sol) IS still frozen, because that leg IS v2.
 TRANSIT_VERBATIM_FILES = \
-	src/interfaces/IReceiver.sol \
 	src/interfaces/ICCTPV2Relayer.sol \
-	src/libraries/CCTPV2Message.sol \
-	test/CCTPV2Message.t.sol \
 	remappings.txt
 
 TRANSIT_BUILD_SETTINGS = solc evm_version optimizer optimizer_runs via_ir auto_detect_remappings

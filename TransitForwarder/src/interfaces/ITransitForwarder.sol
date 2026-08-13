@@ -2,24 +2,22 @@
 pragma solidity ^0.8.20;
 
 /**
- * @dev Interface for the TransitForwarder: a per-route conduit whose engraved next hop receives the USDC that a
- *      CCTP v2 message minted to it, re-burned **in the same transaction** and delegated to the PaymentContract
- *      (CCTPV2Relayer).
+ * @dev Interface for the TransitForwarder: a per-route conduit that re-burns the USDC a CCTP message minted to it,
+ *      in the same transaction, toward the next hop engraved in its address. The burn is delegated to the
+ *      PaymentContract (CCTPV2Relayer).
  *
- *      This contract has NO mint capability. The TransitExecutor calls receiveMessage (which mints here), measures
- *      the delta, and then calls transferMinted/refundMinted. Authority is split accordingly:
+ *      It has NO mint capability — TransitExecutor calls receiveMessage, measures the delta and passes it in — so
+ *      authority splits two ways:
  *
- *          executor → transferMinted / transferMintedWithCaller / refundMinted   (push along the engraved route)
- *          operator → recoverERC20 ×2                                            (pull back to `sender`)
+ *          executor → transferMinted / refundMinted   (push along the route, or hand back to `sender`)
+ *          operator → recoverERC20 x2                 (sweep whatever is left to `sender`)
  *
- *      Least privilege: the executor can only push funds where the address already commits them and cannot withdraw
- *      to `sender`; the operator can only withdraw to `sender` and cannot route funds anywhere. Neither key, if
- *      leaked, can send funds to an arbitrary address — `sender` and `mintRecipient` are both setter-less storage.
+ *      Least privilege: the executor cannot withdraw to `sender`, the operator cannot route funds anywhere, and
+ *      neither can reach an arbitrary address — `sender` and `mintRecipient` are setter-less storage.
  *
- *      Error and event spellings are deliberately kept identical to the sibling ForwarderFactory contracts
- *      (Inbound/Outbound) so the off-chain operator tooling that already decodes those reverts needs no new cases.
- *      Only SelfLoop, FeeExceedsMinted, NotExecutor and MissingBalance are new to this contract. ReceiveFailed and
- *      NothingMinted MOVED to ITransitExecutor along with the mint capability — same spelling, new emitter.
+ *      Error and event spellings match the sibling ForwarderFactory contracts so existing operator tooling needs no
+ *      new cases. New here: SelfLoop, FeeExceedsMinted, NotExecutor, MissingBalance. ReceiveFailed and NothingMinted
+ *      moved to ITransitExecutor with the mint capability.
  */
 interface ITransitForwarder {
     // ── Errors ──
@@ -57,38 +55,28 @@ interface ITransitForwarder {
         bytes32 destinationCaller
     );
 
-    /// @notice refundMinted: minted and immediately returned to `sender`, never re-burned. There is only one refund
-    ///         situation here (mint time), so unlike the inbound forwarder no RefundKind discriminator is needed —
-    ///         post-transit sweeps are Recovered, which may carry a token other than USDC.
+    /// @notice refundMinted: minted and immediately returned to `sender`, never re-burned. Only one refund
+    ///         situation exists here (mint time), so no discriminator is needed — post-transit sweeps are Recovered,
+    ///         which may carry a token other than USDC.
     event Refunded(bytes32 indexed sourceNonce, address indexed to, uint256 amount);
     event Recovered(address indexed token, uint256 amount);
 
     // ── State-changing (executor-only) ──
 
     /// @notice Called by the executor after it has caused the mint. Re-burns `minted` along the engraved route.
-    /// @param minted Amount the executor measured as this contract's balance delta. Bounded here by
-    ///        `0 < minted <= usdc.balanceOf(this)` — over-reporting cannot move more than this contract holds, and
-    ///        under-reporting merely leaves dust for recoverERC20.
+    /// @param minted The executor's measured balance delta, bounded here by `0 < minted <= balanceOf(this)`.
+    /// @param destinationCaller Restricts who may call receiveMessage on the next hop. Always set.
+    /// @dev Argument order mirrors ICCTPV2Relayer: destinationCaller after minFinalityThreshold.
     function transferMinted(
         bytes calldata message,
         uint256 minted,
         uint256 feeAmount,
         uint256 maxFee,
         uint32 minFinalityThreshold,
-        bytes calldata hookData
+        bytes32 destinationCaller
     ) external;
 
-    /// @dev Argument order mirrors ICCTPV2Relayer: destinationCaller after minFinalityThreshold, before hookData.
-    function transferMintedWithCaller(
-        bytes calldata message,
-        uint256 minted,
-        uint256 feeAmount,
-        uint256 maxFee,
-        uint32 minFinalityThreshold,
-        bytes32 destinationCaller,
-        bytes calldata hookData
-    ) external;
-
+    /// @notice Hand the just-minted funds back to `sender` instead of burning them onward.
     function refundMinted(bytes calldata message, uint256 minted) external;
 
     // ── State-changing (operator-only) ──
@@ -101,7 +89,6 @@ interface ITransitForwarder {
     function mintRecipient() external view returns (bytes32);
     function executor() external view returns (address);
     function getRoute() external view returns (address, uint32, bytes32);
-    /// @dev Bumped to 2 by the executor migration: three entry points were replaced, so this is an ABI generation
-    ///      marker, not a cosmetic counter. The implementation is `pure`; `view` here is the compatible declaration.
+    /// @dev 2 since the executor migration — an ABI generation marker, not a cosmetic counter.
     function version() external view returns (uint256);
 }

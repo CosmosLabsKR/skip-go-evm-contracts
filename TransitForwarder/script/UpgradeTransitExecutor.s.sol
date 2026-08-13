@@ -6,13 +6,10 @@ import "./BaseScript.sol";
 import {TransitExecutor} from "../src/TransitExecutor.sol";
 
 /**
- * @notice Code update: swap the TransitExecutor implementation (UUPS). The proxy address — which is baked into every
+ * @notice Code update: swap the TransitExecutor implementation (UUPS). The proxy address — baked into every
  *         forwarder and into already-burned messages' destinationCaller — stays the same. That is the whole point.
- * @dev The caller must be the TransitExecutor owner (_authorizeUpgrade onlyOwner).
- *
- *      This is also how the executor's `operator` is rotated: it is an impl immutable, so a rotation is an upgrade.
- *      The drift guard below will report it as intentional drift, which is exactly what it is — set
- *      ALLOW_IMMUTABLE_REBIND=true for that run.
+ * @dev Caller must be the TransitExecutor owner. Also how `operator` is rotated (it is an impl immutable): the
+ *      drift guard reports it as intentional drift, so set ALLOW_IMMUTABLE_REBIND=true for that run.
  */
 contract UpgradeTransitExecutorScript is BaseScript {
     function run() public {

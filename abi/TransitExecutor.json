@@ -55,26 +55,19 @@
         "internalType": "bytes"
       },
       {
-        "name": "route",
-        "type": "tuple",
-        "internalType": "struct ITransitExecutor.Route",
-        "components": [
-          {
-            "name": "sender",
-            "type": "address",
-            "internalType": "address"
-          },
-          {
-            "name": "destinationDomain",
-            "type": "uint32",
-            "internalType": "uint32"
-          },
-          {
-            "name": "mintRecipient",
-            "type": "bytes32",
-            "internalType": "bytes32"
-          }
-        ]
+        "name": "routeSender",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "routeDestinationDomain",
+        "type": "uint32",
+        "internalType": "uint32"
+      },
+      {
+        "name": "routeMintRecipient",
+        "type": "bytes32",
+        "internalType": "bytes32"
       }
     ],
     "outputs": [],
@@ -95,86 +88,19 @@
         "internalType": "bytes"
       },
       {
-        "name": "route",
-        "type": "tuple",
-        "internalType": "struct ITransitExecutor.Route",
-        "components": [
-          {
-            "name": "sender",
-            "type": "address",
-            "internalType": "address"
-          },
-          {
-            "name": "destinationDomain",
-            "type": "uint32",
-            "internalType": "uint32"
-          },
-          {
-            "name": "mintRecipient",
-            "type": "bytes32",
-            "internalType": "bytes32"
-          }
-        ]
+        "name": "routeSender",
+        "type": "address",
+        "internalType": "address"
       },
       {
-        "name": "feeAmount",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "maxFee",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "minFinalityThreshold",
+        "name": "routeDestinationDomain",
         "type": "uint32",
         "internalType": "uint32"
       },
       {
-        "name": "hookData",
-        "type": "bytes",
-        "internalType": "bytes"
-      }
-    ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
-    "name": "executeTransitWithCaller",
-    "inputs": [
-      {
-        "name": "message",
-        "type": "bytes",
-        "internalType": "bytes"
-      },
-      {
-        "name": "attestation",
-        "type": "bytes",
-        "internalType": "bytes"
-      },
-      {
-        "name": "route",
-        "type": "tuple",
-        "internalType": "struct ITransitExecutor.Route",
-        "components": [
-          {
-            "name": "sender",
-            "type": "address",
-            "internalType": "address"
-          },
-          {
-            "name": "destinationDomain",
-            "type": "uint32",
-            "internalType": "uint32"
-          },
-          {
-            "name": "mintRecipient",
-            "type": "bytes32",
-            "internalType": "bytes32"
-          }
-        ]
+        "name": "routeMintRecipient",
+        "type": "bytes32",
+        "internalType": "bytes32"
       },
       {
         "name": "feeAmount",
@@ -195,11 +121,6 @@
         "name": "destinationCaller",
         "type": "bytes32",
         "internalType": "bytes32"
-      },
-      {
-        "name": "hookData",
-        "type": "bytes",
-        "internalType": "bytes"
       }
     ],
     "outputs": [],
@@ -282,24 +203,6 @@
       }
     ],
     "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "recoverERC20",
-    "inputs": [
-      {
-        "name": "token",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
-        "name": "to",
-        "type": "address",
-        "internalType": "address"
-      }
-    ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
   },
   {
     "type": "function",
@@ -463,31 +366,6 @@
   },
   {
     "type": "event",
-    "name": "Recovered",
-    "inputs": [
-      {
-        "name": "token",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
-      },
-      {
-        "name": "to",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
-      },
-      {
-        "name": "amount",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
-      }
-    ],
-    "anonymous": false
-  },
-  {
-    "type": "event",
     "name": "Upgraded",
     "inputs": [
       {
@@ -512,6 +390,11 @@
   },
   {
     "type": "error",
+    "name": "AmountMismatch",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "ERC1967InvalidImplementation",
     "inputs": [
       {
@@ -524,6 +407,11 @@
   {
     "type": "error",
     "name": "ERC1967NonPayable",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "EmptyDestinationCaller",
     "inputs": []
   },
   {
@@ -544,11 +432,6 @@
   {
     "type": "error",
     "name": "InvalidInitialization",
-    "inputs": []
-  },
-  {
-    "type": "error",
-    "name": "MalformedMessage",
     "inputs": []
   },
   {
@@ -612,17 +495,6 @@
     "type": "error",
     "name": "RouteMismatch",
     "inputs": []
-  },
-  {
-    "type": "error",
-    "name": "SafeERC20FailedOperation",
-    "inputs": [
-      {
-        "name": "token",
-        "type": "address",
-        "internalType": "address"
-      }
-    ]
   },
   {
     "type": "error",

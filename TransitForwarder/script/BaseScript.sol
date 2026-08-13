@@ -15,22 +15,16 @@ import {TransitExecutor} from "../src/TransitExecutor.sol";
  *         is where it is DEPLOYED (LOCAL_DOMAIN = 1); Injective is where it SENDS (INJECTIVE_CCTP_DOMAIN = 29).
  * @dev ⚠️ REDUCED COPY of ForwarderFactory/script/BaseScript.sol.
  *
- *      One difference is worth calling out, because it is the reason a whole class of bug cannot occur here: the
- *      original has to tell an InboundForwarder impl from an OutboundForwarder one, and does so by probing for a
- *      kind-specific getter. In THIS project there is only one kind of forwarder, so the ambiguity cannot arise and
- *      the LOCAL_DOMAIN() check below is a plain sanity check rather than a discriminator.
+ *      The original probes a kind-specific getter to tell Inbound from Outbound impls. There is only one kind of
+ *      forwarder here, so LOCAL_DOMAIN() below is a plain sanity check, not a discriminator. `transmitter()` IS a
+ *      real discriminator for an executor impl, since the forwarder gave it up with the mint capability.
  *
- *      Since the executor migration, TransitForwarder no longer exposes `transmitter()` — the mint capability moved
- *      to TransitExecutor. That makes `transmitter()` a clean discriminator for an EXECUTOR impl (see
- *      _assertExecutorImmutablesMatch), and it also removes half of the cross-project ambiguity noted below.
- *
- *      (The residual risk lives in the OTHER project: pointing its inbound upgrade script at a Transit factory
- *      address still passes its `paymentContract()` probe. That is a one-line fix there — swap the probe to
- *      `INJECTIVE_DOMAIN()` — and is deliberately kept out of this subproject, which shares no code with it.)
+ *      (Residual risk in the OTHER project: its inbound upgrade script still accepts a Transit factory via the
+ *      `paymentContract()` probe. One-line fix there, deliberately out of scope here.)
  */
 abstract contract BaseScript is Script {
     address public immutable usdc;
-    address public immutable transmitter; // CCTP v2 MessageTransmitter (mint leg, called directly)
+    address public immutable transmitter; // CCTP v1 MessageTransmitter (mint leg, called by the executor)
     address public immutable paymentContract; // CCTPV2Relayer (burn leg, delegated)
     address public immutable operator;
 
@@ -50,10 +44,8 @@ abstract contract BaseScript is Script {
         }
     }
 
-    /// @dev The TransitExecutor PROXY address. Not a Config constant: the proxy address is only known after
-    ///      deployment (`new ERC1967Proxy`, not CREATE2), and baking it into Config would create a
-    ///      deploy → edit → recompile cycle with a window in which forwarder impls get the wrong value.
-    ///      Always validated with _assertIsProxy before use.
+    /// @dev The TransitExecutor PROXY. Not a Config constant: the address is only known after deployment, and
+    ///      baking it in would create a deploy → edit → recompile cycle. Always checked with _assertIsProxy.
     function _executorProxy() internal view returns (address) {
         return vm.envAddress("TRANSIT_EXECUTOR_PROXY");
     }
@@ -77,13 +69,10 @@ abstract contract BaseScript is Script {
     /// @dev ERC-1967 implementation slot. Reading it is the cheapest way to tell a proxy from a bare implementation.
     bytes32 private constant _ERC1967_IMPL_SLOT = 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
 
-    /// @dev ⚠️ Guards the single most damaging deployment mistake available here.
-    ///
-    ///      The executor address is baked into (a) every forwarder's `executor` immutable and (b) the
-    ///      `destinationCaller` of messages already burned on other chains. If an IMPLEMENTATION address is used
-    ///      instead of the proxy, everything works until the first executor upgrade — at which point every deployed
-    ///      forwarder's authorized caller ceases to exist, and in-flight messages naming that impl as
-    ///      destinationCaller become permanently unreceivable. There is no recovery.
+    /// @dev ⚠️ Guards the most damaging mistake available here. The executor address is baked into every
+    ///      forwarder's `executor` immutable and into the `destinationCaller` of messages already burned elsewhere.
+    ///      An IMPLEMENTATION address works until the first upgrade, then every forwarder's authorized caller
+    ///      ceases to exist and in-flight messages become permanently unreceivable. No recovery.
     function _assertIsProxy(address a, string memory label) internal view {
         require(a.code.length != 0, string.concat("no code at ", label));
         require(
@@ -98,12 +87,10 @@ abstract contract BaseScript is Script {
     }
 
     // ── immutable drift guard ────────────────────────────────────────────────────────────────────────────────
-    // Why this exists: `_deployTransitForwarderImpl` above re-injects EVERY immutable from Config, so an upgrade
-    // meant to change logic alone silently rebinds usdc/transmitter/paymentContract/operator/LOCAL_DOMAIN whenever
-    // Config has moved. The guard compares Config against the impl that is live right now and refuses to proceed
-    // unless the rebind was asked for. It therefore leans on Config being exactly what
-    // `_deployTransitForwarderImpl` injects — keep those two in step, or the guard starts checking something other
-    // than what will be deployed.
+    // `_deployTransitForwarderImpl` re-injects EVERY immutable from Config, so an upgrade meant to change logic
+    // alone silently rebinds them whenever Config has moved. This compares Config against the live impl and
+    // refuses unless the rebind was asked for. It assumes Config is exactly what the deploy helpers inject — keep
+    // those in step or the guard checks something other than what will be deployed.
     uint256 private _driftCount;
 
     /// @dev factory proxy → beacon → the implementation currently installed for every deployed forwarder.
@@ -170,9 +157,8 @@ abstract contract BaseScript is Script {
     ///      Add a `_diff` line here whenever TransitExecutor gains an immutable — nothing else will notice.
     function _assertExecutorImmutablesMatch(address liveImpl) internal {
         require(liveImpl.code.length != 0, "no code at TransitExecutor impl");
-        // A real discriminator, not just a sanity check: TransitForwarder gave up `transmitter()` when the mint
-        // capability moved here, so only an executor answers this. If that removal is ever reverted, this stops
-        // discriminating and starts merely sanity-checking — update it then.
+        // A real discriminator: only an executor answers this, since the forwarder gave up `transmitter()` with
+        // the mint capability. If that is ever reverted, this stops discriminating — update it then.
         (bool ok, bytes memory data) = liveImpl.staticcall(abi.encodeWithSignature("transmitter()"));
         require(ok && data.length == 32, "impl is not a TransitExecutor (wrong TRANSIT_EXECUTOR_PROXY?)");
 
@@ -185,17 +171,13 @@ abstract contract BaseScript is Script {
 
     /// @dev ⚠️ PRE-FLIGHT FOR FACTORY (UUPS) UPGRADES ONLY — call BEFORE startBroadcast.
     ///
-    ///      `beaconInitCodeHash` was frozen in the live factory's storage at deploy time, but the NEW implementation
-    ///      about to be installed builds proxies from ITS OWN compile-time type(BeaconProxy).creationCode. If the two
-    ///      disagree, the upgrade succeeds and then every createForwarder reverts AddressMismatch — permanently, with
-    ///      no way back except deploying a whole new factory. Deployed forwarders keep working, so nothing looks
-    ///      broken until the next route is needed.
+    ///      `beaconInitCodeHash` was frozen in the live factory's storage at deploy time, but the new impl builds
+    ///      proxies from its OWN type(BeaconProxy).creationCode. If they disagree the upgrade succeeds and every
+    ///      createForwarder then reverts AddressMismatch — permanently. Deployed forwarders keep working, so nothing
+    ///      looks broken until the next route is needed. A build-config change (solc/optimizer/via_ir/evm_version or
+    ///      the OZ pin) is enough to trigger it, and the upgrade scripts never call createForwarder themselves.
     ///
-    ///      A build-config change (optimizer/runs/via_ir/solc/evm_version, or the openzeppelin-contracts pin) between
-    ///      the factory's deployment and now is enough to trigger it, which is exactly why the upgrade scripts cannot
-    ///      be trusted to fail on their own: they never call createForwarder.
-    ///
-    ///      If this reverts, DO NOT force the upgrade. Deploy a fresh factory instead (DeployTransitFactory) and migrate.
+    ///      If this reverts, DO NOT force the upgrade — deploy a fresh factory and migrate.
     function _assertFactoryUpgradeKeepsAddressSpace(address factoryProxy) internal view {
         bytes32 cached = TransitForwarderFactory(factoryProxy).beaconInitCodeHash();
         address beacon = TransitForwarderFactory(factoryProxy).beacon();

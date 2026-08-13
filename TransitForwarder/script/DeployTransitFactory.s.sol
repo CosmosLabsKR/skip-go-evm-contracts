@@ -13,14 +13,12 @@ import {TransitExecutor} from "../src/TransitExecutor.sol";
  *         only because the factory's `initialize` needs it — the factory owns the beacon it creates from that impl.
  *         Per-route forwarders are NOT deployed here; use CreateTransitForwarder.
  *
- * @dev Requires TRANSIT_EXECUTOR_PROXY (run DeployTransitExecutor first). `_deployTransitForwarderImpl` validates
- *      it is a proxy before construction, and the pre-flight below repeats the check outside the broadcast so a bad
- *      value costs nothing — a forwarder impl bound to the wrong executor is scrap.
+ * @dev Requires TRANSIT_EXECUTOR_PROXY (run DeployTransitExecutor first). The pre-flight below checks it outside
+ *      the broadcast so a bad value costs nothing — a forwarder impl bound to the wrong executor is scrap.
  *
- *      This script CLOSES THE DEPLOYMENT CYCLE: the executor needs the factory to create missing forwarders, the
- *      factory needs a forwarder implementation, and that implementation needs the executor. The executor's
- *      `factory` is storage precisely so it can be injected here, at the end. The broadcaster must be the executor
- *      owner; if it is not, set it manually afterwards or the first NEW route reverts FactoryNotSet.
+ *      Also injects `executor.setFactory`, the last wiring step: the executor could not take the factory at
+ *      construction because the factory needs a forwarder impl, which needs the executor. The broadcaster must be
+ *      the executor owner, or the first NEW route reverts FactoryNotSet until someone sets it manually.
  */
 contract DeployTransitFactoryScript is BaseScript {
     function run() public {
@@ -48,7 +46,7 @@ contract DeployTransitFactoryScript is BaseScript {
         // The binding that cannot be fixed later: every forwarder this factory produces answers only to this address.
         require(forwarderImpl.executor() == exec, "forwarder impl bound to the wrong executor");
 
-        // Close the cycle: point the executor at the factory it should create missing forwarders with.
+        // Last wiring step: point the executor at the factory it creates missing forwarders with.
         address execOwner = TransitExecutor(exec).owner();
         if (execOwner == msg.sender) {
             vm.broadcast();

@@ -42,11 +42,11 @@ contract MockTransmitter is IReceiver {
     }
 
     function receiveMessage(bytes calldata message, bytes calldata) external returns (bool) {
-        bytes32 nonce = bytes32(message[12:44]);
+        bytes32 nonce = bytes32(uint256(uint64(bytes8(message[12:20]))));
         if (usedNonce[nonce]) return false;
         usedNonce[nonce] = true;
-        bytes32 mintRecipient = bytes32(message[184:216]);
-        uint256 amount = uint256(bytes32(message[216:248]));
+        bytes32 mintRecipient = bytes32(message[152:184]);
+        uint256 amount = uint256(bytes32(message[184:216]));
         if (amount > 0) usdc.mint(address(uint160(uint256(mintRecipient))), amount);
         return true;
     }
@@ -129,6 +129,8 @@ contract TransitIntegrationTest is Test {
     uint256 constant FEE = 10_000;
     uint256 constant MAX_FEE = 500;
     uint32 constant FINALITY = 2000;
+    /// @dev Non-zero on every path: the executor rejects an unset destinationCaller.
+    bytes32 constant DEST_CALLER = bytes32(uint256(0xCA11E5));
 
     function setUp() public {
         usdc = new MockUSDC();
@@ -156,24 +158,22 @@ contract TransitIntegrationTest is Test {
         fwd = TransitForwarder(payable(factory.createForwarder(routeSender, DEST_DOMAIN, nextHop)));
     }
 
+    /// @dev CCTP **v1** message layout (248 bytes, fixed) — the mint leg. The burn leg is v2, built by the relayer.
     function _message(uint32 destinationDomain, bytes32 nonce, address mintRecipient, uint256 amount)
         internal
         view
         returns (bytes memory)
     {
         bytes memory header = abi.encodePacked(
-            uint32(1), uint32(1), destinationDomain, nonce, bytes32(uint256(0xCC72)), bytes32(0), bytes32(0),
-            uint32(2000), uint32(2000)
+            uint32(0), uint32(1), destinationDomain, uint64(uint256(nonce)),
+            bytes32(uint256(0xCC72)), bytes32(0), bytes32(0)
         );
         bytes memory body = abi.encodePacked(
-            uint32(1),
+            uint32(0),
             bytes32(uint256(uint160(address(0x5011)))), // source-domain burnToken
             bytes32(uint256(uint160(mintRecipient))),
             amount,
-            bytes32(uint256(uint160(routeSender))),
-            uint256(0),
-            uint256(0),
-            uint256(0)
+            bytes32(uint256(uint160(routeSender)))
         );
         return abi.encodePacked(header, body);
     }
@@ -182,15 +182,11 @@ contract TransitIntegrationTest is Test {
         return _message(LOCAL_DOMAIN, nonce, address(fwd), AMOUNT);
     }
 
-    function _route() internal view returns (ITransitExecutor.Route memory) {
-        return ITransitExecutor.Route(routeSender, DEST_DOMAIN, nextHop);
-    }
-
     // ── I-01 end-to-end transit ──
 
     function test_I01_EndToEndTransit() public {
         vm.prank(operator);
-        executor.executeTransit(_good(bytes32(uint256(1))), "att", _route(), FEE, MAX_FEE, FINALITY, hex"c0ffee");
+        executor.executeTransit(_good(bytes32(uint256(1))), "att", routeSender, DEST_DOMAIN, nextHop, FEE, MAX_FEE, FINALITY, DEST_CALLER);
 
         assertEq(relayer.lastTransferAmount(), AMOUNT - FEE, "relayer receives minted minus fee");
         assertEq(relayer.lastDomain(), DEST_DOMAIN, "destination comes from the forwarder's storage");
@@ -200,11 +196,12 @@ contract TransitIntegrationTest is Test {
         assertEq(usdc.allowance(address(fwd), address(relayer)), 0, "no residual allowance");
     }
 
+
     // ── I-02 end-to-end refund ──
 
     function test_I02_EndToEndRefund() public {
         vm.prank(operator);
-        executor.executeRefund(_good(bytes32(uint256(2))), "att", _route());
+        executor.executeRefund(_good(bytes32(uint256(2))), "att", routeSender, DEST_DOMAIN, nextHop);
 
         assertEq(usdc.balanceOf(routeSender), AMOUNT, "refund goes to the route sender");
         assertEq(usdc.balanceOf(address(fwd)), 0);
@@ -222,7 +219,7 @@ contract TransitIntegrationTest is Test {
 
         // Reached through the executor's own derivation path: a transit only succeeds if it resolved to this address.
         vm.prank(operator);
-        executor.executeTransit(_good(bytes32(uint256(3))), "att", _route(), FEE, MAX_FEE, FINALITY, "");
+        executor.executeTransit(_good(bytes32(uint256(3))), "att", routeSender, DEST_DOMAIN, nextHop, FEE, MAX_FEE, FINALITY, DEST_CALLER);
         assertEq(relayer.callCount(), 1, "the executor resolved to the factory-predicted forwarder");
     }
 
@@ -236,13 +233,13 @@ contract TransitIntegrationTest is Test {
         // Message mints to `other`, but names this chain's domain correctly. `other` accepts it — it IS its own
         // recipient — proving routes stay independent rather than leaking into each other.
         vm.prank(operator);
-        executor.executeTransit(_message(LOCAL_DOMAIN, bytes32(uint256(4)), other, AMOUNT), "att", _route(), FEE, MAX_FEE, FINALITY, "");
+        executor.executeTransit(_message(LOCAL_DOMAIN, bytes32(uint256(4)), other, AMOUNT), "att", routeSender, DEST_DOMAIN, nextHop, FEE, MAX_FEE, FINALITY, DEST_CALLER);
         assertEq(relayer.lastMintRecipient(), bytes32(uint256(uint160(address(0xFACE)))), "funds followed the OTHER route");
 
         // And a message whose destination domain is wrong is refused by the forwarder, through the executor.
         vm.prank(operator);
         vm.expectRevert(ITransitForwarder.WrongDestination.selector);
-        executor.executeTransit(_message(LOCAL_DOMAIN + 1, bytes32(uint256(5)), address(fwd), AMOUNT), "att", _route(), FEE, MAX_FEE, FINALITY, "");
+        executor.executeTransit(_message(LOCAL_DOMAIN + 1, bytes32(uint256(5)), address(fwd), AMOUNT), "att", routeSender, DEST_DOMAIN, nextHop, FEE, MAX_FEE, FINALITY, DEST_CALLER);
     }
 
     // ── I-05 exactly one authoritative event ──
@@ -252,7 +249,7 @@ contract TransitIntegrationTest is Test {
     function test_I05_ExecutorEmitsNothingOnTheTransitPath() public {
         vm.recordLogs();
         vm.prank(operator);
-        executor.executeTransit(_good(bytes32(uint256(6))), "att", _route(), FEE, MAX_FEE, FINALITY, "");
+        executor.executeTransit(_good(bytes32(uint256(6))), "att", routeSender, DEST_DOMAIN, nextHop, FEE, MAX_FEE, FINALITY, DEST_CALLER);
 
         Vm.Log[] memory logs = vm.getRecordedLogs();
         uint256 fromExecutor;
@@ -276,14 +273,14 @@ contract TransitIntegrationTest is Test {
 
         vm.prank(operator);
         vm.expectRevert(bytes("relayer rejected"));
-        executor.executeTransit(_good(n), "att", _route(), FEE, MAX_FEE, FINALITY, "");
+        executor.executeTransit(_good(n), "att", routeSender, DEST_DOMAIN, nextHop, FEE, MAX_FEE, FINALITY, DEST_CALLER);
 
         assertFalse(transmitter.usedNonce(n), "nonce unspent");
         assertEq(usdc.balanceOf(address(fwd)), 0, "no funds stranded");
 
         relayer.setForceRevert(false);
         vm.prank(operator);
-        executor.executeTransit(_good(n), "att", _route(), FEE, MAX_FEE, FINALITY, "");
+        executor.executeTransit(_good(n), "att", routeSender, DEST_DOMAIN, nextHop, FEE, MAX_FEE, FINALITY, DEST_CALLER);
         assertEq(relayer.lastTransferAmount(), AMOUNT - FEE, "the same message succeeds on retry");
     }
 
@@ -303,11 +300,11 @@ contract TransitIntegrationTest is Test {
         executor.executeTransit(
             _message(LOCAL_DOMAIN, bytes32(uint256(70)), predicted, AMOUNT),
             "att",
-            ITransitExecutor.Route(routeSender, DEST_DOMAIN, newHop),
+            routeSender, DEST_DOMAIN, newHop,
             FEE,
             MAX_FEE,
             FINALITY,
-            ""
+            DEST_CALLER
         );
 
         assertGt(predicted.code.length, 0, "created in the same transaction as the mint");
@@ -331,11 +328,11 @@ contract TransitIntegrationTest is Test {
             _message(LOCAL_DOMAIN, bytes32(uint256(71)), predicted, AMOUNT),
             "att",
             // same shape, different next hop — so it predicts a DIFFERENT address
-            ITransitExecutor.Route(routeSender, DEST_DOMAIN, bytes32(uint256(uint160(address(0xBADBAD))))),
+            routeSender, DEST_DOMAIN, bytes32(uint256(uint160(address(0xBADBAD)))),
             FEE,
             MAX_FEE,
             FINALITY,
-            ""
+            DEST_CALLER
         );
         assertEq(predicted.code.length, 0, "nothing was created");
         assertFalse(transmitter.usedNonce(bytes32(uint256(71))), "and nothing was minted");
@@ -344,7 +341,7 @@ contract TransitIntegrationTest is Test {
     function test_I07c_UnsetFactoryOnlyBlocksNewRoutes() public {
         // No setFactory call at all. An EXISTING route keeps working...
         vm.prank(operator);
-        executor.executeTransit(_good(bytes32(uint256(72))), "att", _route(), FEE, MAX_FEE, FINALITY, "");
+        executor.executeTransit(_good(bytes32(uint256(72))), "att", routeSender, DEST_DOMAIN, nextHop, FEE, MAX_FEE, FINALITY, DEST_CALLER);
         assertEq(relayer.callCount(), 1);
 
         // ...while a new one fails loudly rather than silently misdelivering.
@@ -355,13 +352,14 @@ contract TransitIntegrationTest is Test {
         executor.executeTransit(
             _message(LOCAL_DOMAIN, bytes32(uint256(73)), predicted, AMOUNT),
             "att",
-            ITransitExecutor.Route(routeSender, DEST_DOMAIN, newHop),
+            routeSender, DEST_DOMAIN, newHop,
             FEE,
             MAX_FEE,
             FINALITY,
-            ""
+            DEST_CALLER
         );
     }
+
 
     /// @dev Refund must be able to create too: otherwise the mint would land on a codeless address with no way to
     ///      push or pull it back.
@@ -374,9 +372,7 @@ contract TransitIntegrationTest is Test {
 
         vm.prank(operator);
         executor.executeRefund(
-            _message(LOCAL_DOMAIN, bytes32(uint256(74)), predicted, AMOUNT),
-            "att",
-            ITransitExecutor.Route(routeSender, DEST_DOMAIN, newHop)
+            _message(LOCAL_DOMAIN, bytes32(uint256(74)), predicted, AMOUNT), "att", routeSender, DEST_DOMAIN, newHop
         );
 
         assertGt(predicted.code.length, 0, "created");

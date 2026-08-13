@@ -4,8 +4,8 @@ pragma solidity >=0.8.0 <0.9.0;
 // ⚠️ TransitForwarder deploys to AVALANCHE C-Chain — NOT to Injective EVM like its ForwarderFactory siblings.
 //
 // That makes this file a genuinely independent config, not a copy: every address below is Avalanche's. The only
-// values it shares with ForwarderFactory/script/Config.sol are the CCTP v2 contracts (Circle deploys those at the
-// same addresses on every supported EVM chain) and the operator keys (deliberately reused).
+// values it shares with ForwarderFactory/script/Config.sol are the operator keys (deliberately reused). Even the
+// transmitter differs — this project's mint leg is CCTP v1, whose addresses are per-chain.
 //
 // Consequence for `make check-transit-copies`: it no longer compares these constants against ForwarderFactory's —
 // divergence here is CORRECT, so a value comparison would only produce noise. The verbatim-file check still applies
@@ -53,32 +53,31 @@ address constant PAYMENT_CONTRACT_AVALANCHE_TESTNET = 0xd704Dc9A8DE1a82C67445219
 address constant OPERATOR_AVALANCHE_TESTNET = 0x257cac9aa58c17E09074d7089CA878167611fc00;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Mint-side config (CCTP v2 receive)
+// Mint leg — CCTP v1 MessageTransmitter
 // ─────────────────────────────────────────────────────────────────────────────
-
-// CCTP v2 MessageTransmitterV2. TransitForwarder calls transmitter.receiveMessage(message, attestation) to mint USDC.
-// Circle deploys MessageTransmitterV2 at the SAME address on every supported EVM chain, which is why these match the
-// Injective values in the sibling config — that is expected, not a copy-paste slip.
-address constant TRANSMITTER_AVALANCHE = 0x81D40F21F12A8F0E3252Bccb954D722d4c464B64;
-address constant TRANSMITTER_AVALANCHE_TESTNET = 0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275;
-
-// CCTP v2 TokenMessengerV2 — recorded for reference ONLY; TransitForwarder never calls it.
-// The burn leg goes through PAYMENT_CONTRACT_* (CCTPV2Relayer), which holds its own messenger reference. Listing the
-// addresses here keeps the deployment facts in one place without implying this project uses them.
-//   mainnet: 0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d
-//   testnet: 0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA
+//
+// ⚠️ THIS DEPLOYMENT MIXES CCTP VERSIONS:
+//      mint (inbound)  = CCTP v1 -> the transmitter below, called directly by TransitExecutor
+//      burn (outbound) = CCTP v2 -> PAYMENT_CONTRACT_* (CCTPV2Relayer), which owns that leg and its own messenger
+//
+// Only the mint address belongs here; a v2 constant would be an unread, unenforced second copy of the relayer's
+// wiring. Nothing infers the version at runtime — binding the right address is what makes the mint leg v1, and a
+// MessageTransmitterV2 address here would point it at the wrong protocol entirely. _assertExecutorImmutablesMatch
+// compares the live impl against this constant before any upgrade.
+//
+// Unlike v2 (one address on every EVM chain), v1 addresses are per-chain — do not assume they match a sibling config.
+//
+// VERIFIED ON-CHAIN (2026-08-13): both answer localDomain() = 1 and version() = 0 (v1; v2 answers 1).
+address constant TRANSMITTER_AVALANCHE = 0x8186359aF5F57FbB40c6b14A588d2A59C0C29880;
+address constant TRANSMITTER_AVALANCHE_TESTNET = 0xa9fB1b3009DCb79E2fe346c16a604B8Fa8aE0a79;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CCTP domains — both VERIFIED ON-CHAIN, not derived from documentation
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// Read directly from Circle's MessageTransmitterV2.localDomain() on each chain (2026-08-12):
-//   Avalanche C-Chain 43114 · 0x81D40F21F12A8F0E3252Bccb954D722d4c464B64 -> 1
-//   Avalanche Fuji    43113 · 0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275 -> 1
-//   Injective EVM     1776  · 0x81D40F21F12A8F0E3252Bccb954D722d4c464B64 -> 29
-//   Injective testnet 1439  · 0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275 -> 29
-// Re-verify the same way if either address ever changes. CCTP domains identify the CHAIN, not the network, which is
-// why mainnet and testnet share a value.
+// Read from Circle's MessageTransmitter.localDomain() on each chain (v1 re-verified 2026-08-13):
+//   Avalanche 43114 / Fuji 43113 -> 1     Injective EVM 1776 / testnet 1439 -> 29
+// Domains identify the CHAIN, not the network, which is why mainnet and testnet share a value.
 
 // This chain's domain. Used by TransitForwarder for the inbound binding check
 // (message.destinationDomain == this) — a wrong value rejects every legitimate message with WrongDestination.
@@ -87,9 +86,7 @@ uint32 constant AVALANCHE_CCTP_DOMAIN = 1;
 // The ONLY destination this deployment routes to. TransitForwarder exists for Avalanche -> Injective, so
 // `initialize` refuses any other destinationDomain (UnsupportedDestination).
 //
-// ⚠️ This does NOT make the destination an implementation-level constant, and that distinction is the whole point:
-//    destinationDomain stays in the CREATE2 salt and in proxy storage, so each forwarder's address still COMMITS
-//    its destination. Making it an impl immutable instead would mean a single beacon upgrade could silently
-//    redirect every already-deployed forwarder — including funds a source-chain burner has already committed to
-//    that address. The value below only constrains which routes can be CREATED; it never affects an existing one.
+// ⚠️ This does NOT make the destination an impl-level constant, and that distinction is the point:
+//    destinationDomain stays in the CREATE2 salt and proxy storage, so each address still COMMITS its destination.
+//    The value below only constrains which routes can be CREATED; it never affects an existing one.
 uint32 constant INJECTIVE_CCTP_DOMAIN = 29;
