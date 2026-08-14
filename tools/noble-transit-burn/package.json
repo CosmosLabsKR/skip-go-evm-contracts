@@ -1,0 +1,26 @@
+{
+  "name": "noble-transit-burn",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Builds (and optionally broadcasts) the Noble CCTP v1 depositForBurnWithCaller that feeds a TransitForwarder on Avalanche.",
+  "type": "module",
+  "scripts": {
+    "burn": "tsx src/index.ts burn",
+    "execute": "tsx src/index.ts execute",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@cosmjs/encoding": "^0.32.4",
+    "@cosmjs/proto-signing": "^0.32.4",
+    "@cosmjs/stargate": "^0.32.4",
+    "cosmjs-types": "^0.9.0",
+    "dotenv": "^16.4.5",
+    "protobufjs": "^7.4.0",
+    "viem": "^2.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.0"
+  }
+}
