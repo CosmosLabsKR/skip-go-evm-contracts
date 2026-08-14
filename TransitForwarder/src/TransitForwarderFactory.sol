@@ -144,7 +144,7 @@ contract TransitForwarderFactory is
         // beaconInitCodeHash (build-config drift), so refuse rather than deploy to an unpredicted address.
         if (forwarder != predicted) revert AddressMismatch();
 
-        // Bubbles the forwarder's revert reason on failure — notably SelfLoop() for a route aimed at this chain,
+        // Bubbles the forwarder's revert reason on failure — notably UnsupportedDestination() for a route aimed at this chain,
         // which only the impl can detect (FailedInnerCall when it reverted without data).
         Address.functionCall(
             forwarder, abi.encodeCall(TransitForwarder.initialize, (sender, destinationDomain, mintRecipient))
@@ -166,5 +166,5 @@ contract TransitForwarderFactory is
         emit ForwarderImplementationUpgraded(newImplementation);
     }
 
-    function _authorizeUpgrade(address newImplementation) internal override onlyOwner {}
+    function _authorizeUpgrade(address) internal override onlyOwner {}
 }

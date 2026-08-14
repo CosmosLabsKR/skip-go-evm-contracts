@@ -10,17 +10,11 @@ import {BeaconProxy} from "openzeppelin-contracts/proxy/beacon/BeaconProxy.sol";
 import {TransitForwarder} from "../src/TransitForwarder.sol";
 import {TransitForwarderFactory} from "../src/TransitForwarderFactory.sol";
 import {ICCTPV2Relayer} from "../src/interfaces/ICCTPV2Relayer.sol";
-import {IReceiver} from "../src/interfaces/IReceiver.sol";
 
 contract MockUSDC is ERC20 {
     constructor() ERC20("USD Coin", "USDC") {}
 }
 
-contract MockTransmitterStub is IReceiver {
-    function receiveMessage(bytes calldata, bytes calldata) external pure returns (bool) {
-        return true;
-    }
-}
 
 contract MockRelayerStub is ICCTPV2Relayer {
     IERC20 public immutable usdc;
@@ -57,7 +51,6 @@ contract UpgradeTransitFactoryTest is Test {
 
     function setUp() public {
         MockUSDC usdc = new MockUSDC();
-        MockTransmitterStub transmitter = new MockTransmitterStub();
         MockRelayerStub relayer = new MockRelayerStub(usdc);
         TransitForwarder impl =
             new TransitForwarder(address(usdc), address(relayer), address(0xA11CE), address(0xE8EC00), 9, 29);

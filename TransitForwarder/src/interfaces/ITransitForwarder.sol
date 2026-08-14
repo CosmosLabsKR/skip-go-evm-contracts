@@ -38,6 +38,8 @@ interface ITransitForwarder {
     error FeeExceedsMinted(); // feeAmount >= minted — nothing would be left to transfer
     error InvalidMaxFee(); // CCTP v2 requires maxFee < transferAmount
     error ZeroAmount(); // recoverERC20(token, 0)
+    error EmptyDestinationCaller(); // an unrestricted next hop is the griefing path this design closes
+    error AmountMismatch(); // `minted` != the amount the attested message says was burned
 
     // ── Events ──
     /// @notice One completed transit: mint (sourceNonce) → re-burn (transferAmount).

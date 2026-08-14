@@ -46,7 +46,7 @@ interface ITransitForwarderFactory {
         returns (bool);
 
     // ── State-changing ──
-    /// @dev Reverts with TransitForwarder.SelfLoop() (bubbled from initialize) when destinationDomain is the local
+    /// @dev Reverts with TransitForwarder.UnsupportedDestination() (bubbled from initialize) when destinationDomain is the local
     ///      CCTP domain — the factory itself cannot check that, since LOCAL_DOMAIN is an impl immutable.
     function createForwarder(address sender, uint32 destinationDomain, bytes32 mintRecipient)
         external

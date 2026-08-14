@@ -5,6 +5,7 @@ import "forge-std/Script.sol";
 import "./Config.sol";
 import {UpgradeableBeacon} from "openzeppelin-contracts/proxy/beacon/UpgradeableBeacon.sol";
 import {BeaconProxy} from "openzeppelin-contracts/proxy/beacon/BeaconProxy.sol";
+import {ERC1967Utils} from "openzeppelin-contracts/proxy/ERC1967/ERC1967Utils.sol";
 import {TransitForwarderFactory} from "../src/TransitForwarderFactory.sol";
 import {TransitForwarder} from "../src/TransitForwarder.sol";
 import {TransitExecutor} from "../src/TransitExecutor.sol";
@@ -55,6 +56,12 @@ abstract contract BaseScript is Script {
     function _deployTransitForwarderImpl() internal returns (TransitForwarder) {
         address exec = _executorProxy();
         _assertIsProxy(exec, "TRANSIT_EXECUTOR_PROXY");
+        return _deployTransitForwarderImpl(exec);
+    }
+
+    /// @dev Overload for callers that already validated the proxy BEFORE startBroadcast. Re-running the guard
+    ///      inside a broadcast would contradict the rule stated on _assertTransitImmutablesMatch below.
+    function _deployTransitForwarderImpl(address exec) internal returns (TransitForwarder) {
         return new TransitForwarder(
             usdc, paymentContract, operator, exec, AVALANCHE_CCTP_DOMAIN, INJECTIVE_CCTP_DOMAIN
         );
@@ -66,9 +73,6 @@ abstract contract BaseScript is Script {
         return new TransitExecutor(usdc, transmitter, operator);
     }
 
-    /// @dev ERC-1967 implementation slot. Reading it is the cheapest way to tell a proxy from a bare implementation.
-    bytes32 private constant _ERC1967_IMPL_SLOT = 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
-
     /// @dev ⚠️ Guards the most damaging mistake available here. The executor address is baked into every
     ///      forwarder's `executor` immutable and into the `destinationCaller` of messages already burned elsewhere.
     ///      An IMPLEMENTATION address works until the first upgrade, then every forwarder's authorized caller
@@ -76,14 +80,14 @@ abstract contract BaseScript is Script {
     function _assertIsProxy(address a, string memory label) internal view {
         require(a.code.length != 0, string.concat("no code at ", label));
         require(
-            uint256(vm.load(a, _ERC1967_IMPL_SLOT)) != 0,
+            uint256(vm.load(a, ERC1967Utils.IMPLEMENTATION_SLOT)) != 0,
             string.concat(label, " is an IMPLEMENTATION, not a proxy - forwarders would be permanently orphaned")
         );
     }
 
     /// @dev The implementation an ERC-1967 proxy currently points at. Call _assertIsProxy first.
     function _liveImplOf(address proxy) internal view returns (address) {
-        return address(uint160(uint256(vm.load(proxy, _ERC1967_IMPL_SLOT))));
+        return address(uint160(uint256(vm.load(proxy, ERC1967Utils.IMPLEMENTATION_SLOT))));
     }
 
     // ── immutable drift guard ────────────────────────────────────────────────────────────────────────────────
@@ -178,9 +182,8 @@ abstract contract BaseScript is Script {
     ///      the OZ pin) is enough to trigger it, and the upgrade scripts never call createForwarder themselves.
     ///
     ///      If this reverts, DO NOT force the upgrade — deploy a fresh factory and migrate.
-    function _assertFactoryUpgradeKeepsAddressSpace(address factoryProxy) internal view {
+    function _assertFactoryUpgradeKeepsAddressSpace(address factoryProxy, address beacon) internal view {
         bytes32 cached = TransitForwarderFactory(factoryProxy).beaconInitCodeHash();
-        address beacon = TransitForwarderFactory(factoryProxy).beacon();
         bytes32 fromThisBuild =
             keccak256(abi.encodePacked(type(BeaconProxy).creationCode, abi.encode(beacon, bytes(""))));
         if (cached != fromThisBuild) {

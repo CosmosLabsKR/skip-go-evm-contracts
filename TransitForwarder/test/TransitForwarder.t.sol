@@ -27,7 +27,7 @@ contract MockUSDC is ERC20 {
     }
 }
 
-/// @dev Simulates the CCTP v2 MessageTransmitter: parses the burn body (same offsets as the contract) and mints
+/// @dev Simulates the CCTP v1 MessageTransmitter: parses the burn body (same offsets as the contract) and mints
 ///      `amount` USDC to `mintRecipient`. Tracks nonce replay and supports a forced-failure flag.
 contract MockTransmitter is IReceiver {
     MockUSDC public immutable usdc;
@@ -215,7 +215,7 @@ contract TransitForwarderTest is Test {
         fwd = TransitForwarder(payable(factory.createForwarder(routeSender, DEST_DOMAIN, mintRecipient)));
     }
 
-    // ── message builder (CCTP v2 offsets) ──
+    // ── message builder (CCTP v1 offsets) ──
 
     /// @dev CCTP **v1** message layout (248 bytes, fixed). Header 116 + burn body 132 — no maxFee/feeExecuted/
     ///      expirationBlock/hookData, which v1 simply does not have.
@@ -628,6 +628,31 @@ contract TransitForwarderTest is Test {
         vm.prank(address(executor));
         vm.expectRevert(ITransitForwarder.NotOperator.selector);
         fwd.recoverERC20(address(usdc), 1);
+    }
+
+    // ── T-42 / T-43 the self-defence copies of the executor's two gates ──
+
+    /// @dev Every other transit invariant is re-checked here because the executor is upgradeable. This one is the
+    ///      reason the executor exists, so it must not be the exception — an upgraded executor that stopped
+    ///      rejecting a zero destinationCaller would reopen the griefing hole one hop along.
+    function test_T42_EmptyDestinationCallerRejectedByTheForwarderToo() public {
+        bytes memory m = _goodMessage(AMOUNT, _nonce(42));
+        usdc.mint(address(fwd), AMOUNT);
+
+        vm.prank(address(executor));
+        vm.expectRevert(ITransitForwarder.EmptyDestinationCaller.selector);
+        fwd.transferMinted(m, AMOUNT, FEE, MAX_FEE, FINALITY, bytes32(0));
+    }
+
+    /// @dev The forwarder holds the attested message, so it can check the reported amount against it rather than
+    ///      only bounding it by its own balance. CCTP v1 deducts no destination-side fee, so the equality is exact.
+    function test_T43_MintedMustEqualTheAttestedAmount() public {
+        bytes memory m = _goodMessage(AMOUNT, _nonce(43));
+        usdc.mint(address(fwd), AMOUNT);
+
+        vm.prank(address(executor));
+        vm.expectRevert(ITransitForwarder.AmountMismatch.selector);
+        fwd.transferMinted(m, AMOUNT - 1, FEE, MAX_FEE, FINALITY, DEST_CALLER);
     }
 
     // ── T-39 / T-40 the bound on the executor-reported amount ──

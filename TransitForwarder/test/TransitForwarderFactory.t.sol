@@ -12,7 +12,6 @@ import {TransitForwarderFactory} from "../src/TransitForwarderFactory.sol";
 import {ITransitForwarder} from "../src/interfaces/ITransitForwarder.sol";
 import {ITransitForwarderFactory} from "../src/interfaces/ITransitForwarderFactory.sol";
 import {ICCTPV2Relayer} from "../src/interfaces/ICCTPV2Relayer.sol";
-import {IReceiver} from "../src/interfaces/IReceiver.sol";
 
 // ── Minimal mocks (the factory suite only needs the constructor guards to be satisfiable) ──
 
@@ -20,11 +19,6 @@ contract MockUSDC is ERC20 {
     constructor() ERC20("USD Coin", "USDC") {}
 }
 
-contract MockTransmitterStub is IReceiver {
-    function receiveMessage(bytes calldata, bytes calldata) external pure returns (bool) {
-        return true;
-    }
-}
 
 contract MockRelayerStub is ICCTPV2Relayer {
     IERC20 public immutable usdc;
@@ -68,7 +62,6 @@ contract TransitForwarderFactoryV2 is TransitForwarderFactory {
 
 contract TransitForwarderFactoryTest is Test {
     MockUSDC usdc;
-    MockTransmitterStub transmitter;
     /// @dev The forwarder only stores this address and gates on it; the factory tests never call a transit entry
     ///      point, so a plain address stands in for the executor proxy here.
     address constant EXECUTOR = address(0xE8EC00);
@@ -88,7 +81,6 @@ contract TransitForwarderFactoryTest is Test {
 
     function setUp() public {
         usdc = new MockUSDC();
-        transmitter = new MockTransmitterStub();
         relayer = new MockRelayerStub(usdc);
         impl = new TransitForwarder(
             address(usdc), address(relayer), operator, EXECUTOR, LOCAL_DOMAIN, DEST_DOMAIN

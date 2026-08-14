@@ -11,6 +11,7 @@ import {ITransitExecutor} from "./interfaces/ITransitExecutor.sol";
 import {ITransitForwarder} from "./interfaces/ITransitForwarder.sol";
 import {ITransitForwarderFactory} from "./interfaces/ITransitForwarderFactory.sol";
 import {CCTPV1Message} from "./libraries/CCTPV1Message.sol";
+import {TransitBurnParams} from "./libraries/TransitBurnParams.sol";
 
 /**
  * @title TransitExecutor
@@ -118,7 +119,7 @@ contract TransitExecutor is ITransitExecutor, Initializable, UUPSUpgradeable, Ow
         bytes32 destinationCaller
     ) external onlyOperator nonReentrant {
         if (destinationCaller == bytes32(0)) revert EmptyDestinationCaller();
-        _checkStaticParams(feeAmount, minFinalityThreshold);
+        TransitBurnParams.check(feeAmount, minFinalityThreshold);
         address forwarder = _ensureForwarder(message, routeSender, routeDestinationDomain, routeMintRecipient);
         uint256 minted = _receiveAndMeasure(message, attestation, forwarder);
 
@@ -145,16 +146,6 @@ contract TransitExecutor is ITransitExecutor, Initializable, UUPSUpgradeable, Ow
     }
 
     // ── internal ──
-
-    /// @dev Checked before receiveMessage so a bad call does not burn the signature-verification gas. Purely a
-    ///      failure-cost optimisation — the forwarder re-checks, and either way the whole transaction reverts.
-    function _checkStaticParams(uint256 feeAmount, uint32 minFinalityThreshold) internal pure {
-        if (feeAmount == 0) revert ITransitForwarder.ZeroFee();
-        // CCTP v2 accepts only 1000 (fast/soft) or 2000 (standard/hard).
-        if (minFinalityThreshold != 1000 && minFinalityThreshold != 2000) {
-            revert ITransitForwarder.InvalidFinalityThreshold();
-        }
-    }
 
     /// @dev Derived from the message alone, so an executor with no factory still serves already-deployed routes.
     ///      No length pre-check: an out-of-range slice reverts by itself.
@@ -186,11 +177,11 @@ contract TransitExecutor is ITransitExecutor, Initializable, UUPSUpgradeable, Ow
                 revert RouteMismatch();
             }
             ITransitForwarderFactory(f).createForwarder(routeSender, routeDomain, routeRecipient);
-        }
 
-        // Post-condition, not redundant: a void external call skips the extcodesize check, so code-less here would
-        // let the next call "succeed" while the mint sits at an address nobody controls. See NotContract.
-        if (forwarder.code.length == 0) revert NotContract();
+            // Post-condition of CREATION, not redundant: a void external call skips the extcodesize check, so
+            // code-less here would let the next call "succeed" while the mint sits at an address nobody controls.
+            if (forwarder.code.length == 0) revert NotContract();
+        }
     }
 
     /// @dev Snapshots the FORWARDER's balance — the mint goes straight there, never through this contract.

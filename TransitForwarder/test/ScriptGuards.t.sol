@@ -2,10 +2,10 @@
 pragma solidity ^0.8.20;
 
 import {Test} from "forge-std/Test.sol";
-import {ERC20} from "openzeppelin-contracts/token/ERC20/ERC20.sol";
 import {IERC20} from "openzeppelin-contracts/token/ERC20/IERC20.sol";
 
 import "../script/BaseScript.sol";
+import {ERC1967Utils} from "openzeppelin-contracts/proxy/ERC1967/ERC1967Utils.sol";
 import {TransitForwarder} from "../src/TransitForwarder.sol";
 import {TransitExecutor} from "../src/TransitExecutor.sol";
 import {ICCTPV2Relayer} from "../src/interfaces/ICCTPV2Relayer.sol";
@@ -87,7 +87,10 @@ contract ScriptGuardsTest is Test {
     address constant OTHER_EXECUTOR = address(0xDEAD03);
     address constant EXECUTOR_PROXY = address(0xE8EC00);
     uint32 constant OTHER_DOMAIN = 31;
-    bytes32 constant ERC1967_IMPL_SLOT = 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
+
+    /// @dev Owned by BaseScript._settleDrift; restated once here rather than in each expectRevert.
+    bytes constant DRIFT_REVERT =
+        bytes("immutable drift vs Config (set ALLOW_IMMUTABLE_REBIND=true to rebind intentionally)");
 
     Harness harness;
 
@@ -114,7 +117,7 @@ contract ScriptGuardsTest is Test {
         // anything that is not a proxy. Give the address code and a non-zero ERC-1967 implementation slot.
         vm.setEnv("TRANSIT_EXECUTOR_PROXY", vm.toString(EXECUTOR_PROXY));
         vm.etch(EXECUTOR_PROXY, hex"600160005260206000f3");
-        vm.store(EXECUTOR_PROXY, ERC1967_IMPL_SLOT, bytes32(uint256(uint160(address(0xBEEF1E)))));
+        vm.store(EXECUTOR_PROXY, ERC1967Utils.IMPLEMENTATION_SLOT, bytes32(uint256(uint160(address(0xBEEF1E)))));
     }
 
     function _impl(
@@ -153,7 +156,7 @@ contract ScriptGuardsTest is Test {
             AVALANCHE_CCTP_DOMAIN,
             INJECTIVE_CCTP_DOMAIN
         );
-        vm.expectRevert(bytes("immutable drift vs Config (set ALLOW_IMMUTABLE_REBIND=true to rebind intentionally)"));
+        vm.expectRevert(DRIFT_REVERT);
         harness.assertTransit(address(drifted));
     }
 
@@ -168,7 +171,7 @@ contract ScriptGuardsTest is Test {
             AVALANCHE_CCTP_DOMAIN,
             INJECTIVE_CCTP_DOMAIN
         );
-        vm.expectRevert(bytes("immutable drift vs Config (set ALLOW_IMMUTABLE_REBIND=true to rebind intentionally)"));
+        vm.expectRevert(DRIFT_REVERT);
         harness.assertTransit(address(drifted));
     }
 
@@ -181,7 +184,7 @@ contract ScriptGuardsTest is Test {
             OTHER_DOMAIN,
             INJECTIVE_CCTP_DOMAIN
         );
-        vm.expectRevert(bytes("immutable drift vs Config (set ALLOW_IMMUTABLE_REBIND=true to rebind intentionally)"));
+        vm.expectRevert(DRIFT_REVERT);
         harness.assertTransit(address(drifted));
     }
 
@@ -197,7 +200,7 @@ contract ScriptGuardsTest is Test {
             AVALANCHE_CCTP_DOMAIN,
             INJECTIVE_CCTP_DOMAIN
         );
-        vm.expectRevert(bytes("immutable drift vs Config (set ALLOW_IMMUTABLE_REBIND=true to rebind intentionally)"));
+        vm.expectRevert(DRIFT_REVERT);
         harness.assertTransit(address(drifted));
     }
 
@@ -251,14 +254,14 @@ contract ScriptGuardsTest is Test {
         // Construct BEFORE arming expectRevert: it would otherwise be consumed by this CREATE.
         address drifted =
             address(_executorImpl(USDC_AVALANCHE_TESTNET, OTHER_TRANSMITTER, OPERATOR_AVALANCHE_TESTNET));
-        vm.expectRevert(bytes("immutable drift vs Config (set ALLOW_IMMUTABLE_REBIND=true to rebind intentionally)"));
+        vm.expectRevert(DRIFT_REVERT);
         harness.assertExecutor(drifted);
     }
 
     function test_ExecutorGuardBlocksOperatorDrift() public {
         address drifted =
             address(_executorImpl(USDC_AVALANCHE_TESTNET, TRANSMITTER_AVALANCHE_TESTNET, OTHER_OPERATOR));
-        vm.expectRevert(bytes("immutable drift vs Config (set ALLOW_IMMUTABLE_REBIND=true to rebind intentionally)"));
+        vm.expectRevert(DRIFT_REVERT);
         harness.assertExecutor(drifted);
     }
 

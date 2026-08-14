@@ -414,6 +414,16 @@
   },
   {
     "type": "error",
+    "name": "AmountMismatch",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "EmptyDestinationCaller",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "EmptyMintRecipient",
     "inputs": []
   },

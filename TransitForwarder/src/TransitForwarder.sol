@@ -8,6 +8,7 @@ import {SafeERC20} from "openzeppelin-contracts/token/ERC20/utils/SafeERC20.sol"
 import {ICCTPV2Relayer} from "./interfaces/ICCTPV2Relayer.sol";
 import {ITransitForwarder} from "./interfaces/ITransitForwarder.sol";
 import {CCTPV1Message} from "./libraries/CCTPV1Message.sol";
+import {TransitBurnParams} from "./libraries/TransitBurnParams.sol";
 
 /**
  * @title TransitForwarder
@@ -146,7 +147,10 @@ contract TransitForwarder is ITransitForwarder, Initializable {
         uint32 minFinalityThreshold,
         bytes32 destinationCaller
     ) external onlyExecutor nonReentrant {
-        _checkStaticParams(feeAmount, minFinalityThreshold);
+        // Every other transit invariant is re-checked here because the executor is upgradeable; this one is the
+        // reason the executor exists at all, so it gets the same treatment rather than being trusted upstream.
+        if (destinationCaller == bytes32(0)) revert EmptyDestinationCaller();
+        TransitBurnParams.check(feeAmount, minFinalityThreshold);
         _validateBinding(message, minted);
         uint256 transferAmount = _split(minted, feeAmount, maxFee);
 
@@ -200,21 +204,14 @@ contract TransitForwarder is ITransitForwarder, Initializable {
 
     // ── internal ──
 
-    /// @dev Amount-independent parameters. The executor checks these first; this is the self-defence copy.
-    function _checkStaticParams(uint256 feeAmount, uint32 minFinalityThreshold) internal pure {
-        if (feeAmount == 0) revert ZeroFee();
-        // CCTP v2 accepts only 1000 (fast/soft) or 2000 (standard/hard).
-        if (minFinalityThreshold != 1000 && minFinalityThreshold != 2000) revert InvalidFinalityThreshold();
-    }
-
     /// @dev The message must mint to THIS forwarder, on this chain's domain — that binding is what keeps a message
     ///      on its route. Self-defence, not ceremony: the executor derives this address from mintRecipient so the
     ///      recipient check is always true on the honest path, but the executor is upgradeable and this is what
     ///      keeps the forwarder on its route regardless of what it becomes.
     ///
-    ///      The `minted` bound is all this contract does about trusting the executor's measurement. Over-reporting
-    ///      cannot move more than it holds; under-reporting leaves dust for recoverERC20. That asymmetry is why an
-    ///      upper bound suffices and no lower bound is possible.
+    ///      `minted` is bounded twice: it must not exceed what this contract holds, and it must equal what the
+    ///      attested message says was burned. CCTP v1 deducts no destination-side fee, so that equality is exact —
+    ///      which makes this check independent of the executor's measurement rather than a restatement of it.
     ///
     ///      ⚠️ Do NOT compare burn.messageSender against `sender`. It is bytes32 and non-EVM source domains use all
     ///      32 bytes, so the check would reject every message from them. `sender` is therefore a route key, not an
@@ -228,6 +225,7 @@ contract TransitForwarder is ITransitForwarder, Initializable {
 
         if (minted == 0) revert ZeroAmount();
         if (minted > usdc.balanceOf(address(this))) revert MissingBalance();
+        if (minted != message._getAmount()) revert AmountMismatch();
     }
 
     /// @dev Split `minted` into the onward transfer and the relayer fee, then approve the PaymentContract.
