@@ -7,6 +7,7 @@
   "scripts": {
     "burn": "tsx src/index.ts burn",
     "execute": "tsx src/index.ts execute",
+    "mint": "tsx src/index.ts mint",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

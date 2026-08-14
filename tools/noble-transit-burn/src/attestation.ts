@@ -74,7 +74,63 @@ export async function waitForAttestation(
       );
     }
     if (!announced) {
-      console.log(`waiting for Circle's attestation (${cfg.irisApi}, source domain ${cfg.nobleDomain}) ...`);
+      console.log(`waiting for Circle's attestation — ${cfg.irisApi}/v1/messages/${cfg.nobleDomain}/${txHash} ...`);
+      announced = true;
+    }
+    await new Promise((r) => setTimeout(r, opts.intervalMs));
+  }
+}
+
+/**
+ * The same thing for the **v2** API, which serves the Avalanche → Injective hop.
+ *
+ *   GET /v2/messages/{sourceDomain}?transactionHash={txHash}
+ *     → { messages: [ { message, attestation, eventNonce, cctpVersion, status: "complete" | "pending_confirmations" } ] }
+ *
+ * The two APIs are disjoint indexes, not two views of one: a v2 message is simply absent from /v1 and vice versa,
+ * and both answer 404 for anything they do not hold. That 404 is why an Avalanche tx hash looks like "no such
+ * transaction" rather than "wrong endpoint", so the error below names both coordinates that have to line up.
+ */
+export async function waitForV2Attestation(
+  cfg: Config,
+  txHash: string,
+  sourceDomain: number,
+  opts: { timeoutMs: number; intervalMs: number },
+): Promise<AttestedMessage[]> {
+  const url = `${cfg.irisApi}/v2/messages/${sourceDomain}?transactionHash=${txHash}`;
+  const deadline = Date.now() + opts.timeoutMs;
+  let announced = false;
+  let lastStatus: string | undefined;
+
+  for (;;) {
+    const res = await fetch(url);
+    if (res.ok) {
+      const body = (await res.json()) as { messages?: (IrisMessage & { status?: string })[] };
+      const messages = body.messages ?? [];
+      lastStatus = messages[0]?.status;
+      if (messages.length > 0 && messages.every((m) => m.status === "complete" && isComplete(m))) {
+        return messages.map((m) => ({
+          message: m.message as Hex,
+          attestation: m.attestation as Hex,
+          eventNonce: m.eventNonce,
+        }));
+      }
+    } else if (res.status !== 404) {
+      throw new Error(`attestation API ${res.status} ${res.statusText} for ${url}`);
+    }
+
+    if (Date.now() >= deadline) {
+      throw new Error(
+        lastStatus
+          ? `attestation for ${txHash} is still "${lastStatus}" after ${Math.round(opts.timeoutMs / 1000)}s — ` +
+            `re-run later, nothing is lost.`
+          : `Circle's v2 API has no message for ${txHash} on source domain ${sourceDomain}. ` +
+            `Check both: the hash must be the Avalanche tx that ran \`execute\` (not the Noble burn), and the ` +
+            `domain must be the chain that tx ran on. See ${url}`,
+      );
+    }
+    if (!announced) {
+      console.log(`waiting for Circle's attestation — ${url} ...`);
       announced = true;
     }
     await new Promise((r) => setTimeout(r, opts.intervalMs));

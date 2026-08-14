@@ -75,6 +75,13 @@ export interface Config {
   routeDomain: number;
   routeMintRecipient: Hex;
 
+  // ── Injective (hop 3 destination — where the transit actually ends) ──
+  // Injective's EVM runs the stock CCTP v2 contracts, so the final mint is an ordinary receiveMessage there.
+  injectiveRpc: string;
+  injectiveMessageTransmitter: Address;
+  /** Key for whoever the onward burn named as destinationCaller. Only the `mint` command needs it. */
+  injectivePrivateKey?: Uint8Array;
+
   // ── Onward burn (hop 2 parameters, passed to executeTransit) ──
   // Optional here, validated by requireExecuteParams: `burn` never touches them, and forcing a burn-only user to
   // invent fee values would be noise.
@@ -149,6 +156,12 @@ export function loadConfig(overrides: { amount?: bigint } = {}): Config {
     routeDomain: reqUint("ROUTE_DOMAIN", "29"),
     // No default: this is the final recipient of the funds and a wrong value is unrecoverable.
     routeMintRecipient: reqBytes32("ROUTE_MINT_RECIPIENT"),
+
+    injectiveRpc: req("INJECTIVE_RPC", "https://sentry.evm-rpc.injective.network"),
+    // Circle deploys MessageTransmitterV2 at the same address on every EVM chain; verified against
+    // localDomain() == 29 before the call is built, so a wrong override cannot silently mint on another chain.
+    injectiveMessageTransmitter: reqAddress("INJECTIVE_MESSAGE_TRANSMITTER", "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64"),
+    injectivePrivateKey: parsePrivateKey("INJECTIVE_PK", process.env.INJECTIVE_PK),
 
     feeAmount: process.env.FEE_AMOUNT ? BigInt(process.env.FEE_AMOUNT) : undefined,
     maxFee: process.env.MAX_FEE ? BigInt(process.env.MAX_FEE) : undefined,
