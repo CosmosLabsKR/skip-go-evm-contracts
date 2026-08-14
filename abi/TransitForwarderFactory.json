@@ -498,6 +498,11 @@
   },
   {
     "type": "error",
+    "name": "UnsupportedDestination",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "ZeroAddress",
     "inputs": []
   },

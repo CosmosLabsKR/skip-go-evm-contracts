@@ -4,7 +4,9 @@ pragma solidity ^0.8.20;
 import {Test} from "forge-std/Test.sol";
 import {ERC20} from "openzeppelin-contracts/token/ERC20/ERC20.sol";
 import {ERC1967Proxy} from "openzeppelin-contracts/proxy/ERC1967/ERC1967Proxy.sol";
+import {ERC1967Utils} from "openzeppelin-contracts/proxy/ERC1967/ERC1967Utils.sol";
 import {Initializable} from "openzeppelin-contracts/proxy/utils/Initializable.sol";
+import {OwnableUpgradeable} from "openzeppelin-contracts-upgradeable/access/OwnableUpgradeable.sol";
 
 import {TransitExecutor} from "../src/TransitExecutor.sol";
 import {ITransitExecutor} from "../src/interfaces/ITransitExecutor.sol";
@@ -121,6 +123,17 @@ contract MockTransitForwarder {
         lastMinFinality = minFinalityThreshold;
         lastDestinationCaller = destinationCaller;
         callCount++;
+    }
+}
+
+/// @dev Bumped `version()` used to prove a UUPS upgrade actually swapped logic. Mirrors the factory suite's
+///      TransitForwarderFactoryV2. The constructor re-declares the immutables because they live in the impl, which
+///      is precisely what an upgrade replaces.
+contract TransitExecutorV2 is TransitExecutor {
+    constructor(address u, address t, address o) TransitExecutor(u, t, o) {}
+
+    function version() external pure override returns (uint256) {
+        return 2;
     }
 }
 
@@ -523,5 +536,77 @@ contract TransitExecutorTest is Test {
 
         vm.expectRevert(ITransitExecutor.ZeroAddress.selector);
         new TransitExecutor(address(usdc), address(transmitter), address(0));
+    }
+
+    // ── X-20 UUPS upgrade ──
+    //
+    // This contract's address is baked into every forwarder's `executor` immutable and into the destinationCaller of
+    // messages already burned on other chains, so UUPS exists here for one reason: change behaviour, keep the
+    // address. These two tests are the counterparts of the factory suite's TF8/TF9.
+
+    /// @dev The upgrade must swap logic while leaving the address, the owner and — the one piece of executor state
+    ///      that matters — `factory` untouched. The `factory()` assertion below is what proves the storage survived.
+    ///      The transit at the end proves something different and still worth having: the whole path is intact
+    ///      afterwards. It does NOT exercise the factory read — `_ensureForwarder` short-circuits on the mock
+    ///      forwarder, which is already deployed.
+    function test_X20_UUPSUpgradeKeepsAddressAndState() public {
+        vm.prank(owner);
+        executor.setFactory(address(0xFAC7));
+
+        address addressBefore = address(executor);
+        address implBefore = address(uint160(uint256(vm.load(addressBefore, ERC1967Utils.IMPLEMENTATION_SLOT))));
+        assertEq(executor.version(), 1, "baseline");
+
+        TransitExecutorV2 newImpl = new TransitExecutorV2(address(usdc), address(transmitter), operator);
+        vm.prank(owner);
+        executor.upgradeToAndCall(address(newImpl), "");
+
+        assertEq(address(executor), addressBefore, "THE address must never change - forwarders bind to it");
+        assertEq(executor.version(), 2, "executor logic swapped");
+        assertTrue(
+            address(uint160(uint256(vm.load(addressBefore, ERC1967Utils.IMPLEMENTATION_SLOT)))) != implBefore,
+            "implementation slot must actually point somewhere new"
+        );
+        assertEq(executor.owner(), owner, "owner must survive the upgrade");
+        assertEq(executor.factory(), address(0xFAC7), "factory storage must survive the upgrade");
+        assertEq(address(executor.usdc()), address(usdc), "immutables come from the new impl and must match Config");
+        assertEq(address(executor.transmitter()), address(transmitter), "transmitter must be re-injected identically");
+        assertEq(executor.operator(), operator, "operator must be re-injected identically");
+
+        // ...and the transit path still works end to end against the same forwarder.
+        vm.prank(operator);
+        executor.executeTransit(
+            _goodMessage(AMOUNT, _nonce(200)), "att", routeSender, 3, NEXT_HOP, FEE, MAX_FEE, FINALITY, DEST_CALLER
+        );
+        assertEq(forwarder.callCount(), 1, "transit still lands after the upgrade");
+        assertEq(forwarder.lastMinted(), AMOUNT);
+    }
+
+    /// @dev A stranger must not be able to move this address's behaviour. `_authorizeUpgrade` is onlyOwner and the
+    ///      operator is deliberately NOT the owner — the two roles stay separate through the upgrade path too.
+    function test_X21_UpgradeIsOwnerOnly() public {
+        address attacker = address(0xBAD);
+        // Deploy before any prank: a CREATE consumes the pending prank, which would leave the upgrade call coming
+        // from the owner and passing.
+        address newImpl = address(new TransitExecutorV2(address(usdc), address(transmitter), operator));
+
+        vm.prank(attacker);
+        vm.expectRevert(abi.encodeWithSelector(OwnableUpgradeable.OwnableUnauthorizedAccount.selector, attacker));
+        executor.upgradeToAndCall(newImpl, "");
+
+        // Not even the operator — it drives transit, not upgrades.
+        vm.prank(operator);
+        vm.expectRevert(abi.encodeWithSelector(OwnableUpgradeable.OwnableUnauthorizedAccount.selector, operator));
+        executor.upgradeToAndCall(newImpl, "");
+
+        // setFactory is on the same owner gate, and it is the one owner surface that changes routing.
+        vm.prank(attacker);
+        vm.expectRevert(abi.encodeWithSelector(OwnableUpgradeable.OwnableUnauthorizedAccount.selector, attacker));
+        executor.setFactory(address(0xFAC7));
+
+        // The owner succeeds.
+        vm.prank(owner);
+        executor.upgradeToAndCall(newImpl, "");
+        assertEq(executor.version(), 2);
     }
 }

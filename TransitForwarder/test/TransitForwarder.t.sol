@@ -771,7 +771,10 @@ contract TransitForwarderTest is Test {
     function test_T35_InitializeRejectsForeignDestination() public {
         vm.expectRevert(ITransitForwarder.UnsupportedDestination.selector);
         factory.createForwarder(routeSender, OTHER_DEST_DOMAIN, mintRecipient);
-        assertFalse(factory.isForwarderDeployed(routeSender, OTHER_DEST_DOMAIN, mintRecipient));
+        // The probe refuses the same route rather than reporting "not deployed" — see TF5b for why `false` would be
+        // the more dangerous answer.
+        vm.expectRevert(ITransitForwarder.UnsupportedDestination.selector);
+        factory.isForwarderDeployed(routeSender, OTHER_DEST_DOMAIN, mintRecipient);
     }
 
     /// @dev ⚠️ The property that makes pinning safe: transfers read per-route STORAGE, never the immutable. A beacon

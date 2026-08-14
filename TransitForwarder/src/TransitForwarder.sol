@@ -122,8 +122,12 @@ contract TransitForwarder is ITransitForwarder, Initializable {
         if (_mintRecipient == bytes32(0)) revert EmptyMintRecipient();
         // This deployment routes to exactly one destination (Injective). Anything else is a typo or a
         // misunderstanding, and getting it wrong sends funds to the wrong chain irrecoverably — the CREATE2 address
-        // would still look perfectly valid. The factory cannot perform this check (ALLOWED_DESTINATION_DOMAIN is an
-        // impl immutable), so it lands here and createForwarder bubbles the revert.
+        // would still look perfectly valid.
+        //
+        // The factory refuses such a route earlier, in _guardRoute, so no honest caller is ever handed the address.
+        // ⚠️ That is a guard on the factory's own views, NOT a barrier: the salt preimage and both CREATE2 inputs
+        // (beacon(), beaconInitCodeHash()) are public, so anyone determined can still derive the address off-chain
+        // and burn to it. This check STAYS: it is self-defence that assumes no particular factory.
         //
         // Note this constrains CREATION only; the stored value below is what transfers use. See the immutable's docs.
         if (_destinationDomain != ALLOWED_DESTINATION_DOMAIN) revert UnsupportedDestination();
@@ -132,8 +136,8 @@ contract TransitForwarder is ITransitForwarder, Initializable {
         mintRecipient = _mintRecipient;
     }
 
-    /// @dev 2, not 1: the executor migration replaced three entry points, so this marks an ABI generation. It is the
-    ///      only on-chain way for off-chain tooling to tell which surface a beacon-upgraded proxy presents.
+    /// @dev The only on-chain way for off-chain tooling to tell which surface a beacon-upgraded proxy presents.
+    ///      Bump it on every impl that changes the ABI or behaviour.
     function version() external pure virtual returns (uint256) {
         return 1;
     }

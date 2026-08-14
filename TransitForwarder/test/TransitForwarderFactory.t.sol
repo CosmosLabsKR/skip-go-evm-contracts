@@ -102,6 +102,13 @@ contract TransitForwarderFactoryTest is Test {
         );
     }
 
+    /// @dev Same executor (so upgradeForwarderImplementation accepts it), different allowed destination.
+    function _newImplWithDestination(uint32 allowedDestination) internal returns (TransitForwarder) {
+        return new TransitForwarder(
+            address(usdc), address(relayer), operator, EXECUTOR, LOCAL_DOMAIN, allowedDestination
+        );
+    }
+
     // ── T-F1 prediction == deployment ──
 
     function test_TF1_PredictedMatchesDeployed() public {
@@ -149,19 +156,92 @@ contract TransitForwarderFactoryTest is Test {
         factory.createForwarder(routeSender, DEST_DOMAIN, bytes32(0));
     }
 
-    // ── T-F5 a destination other than the allowed one bubbles up from the implementation ──
+    // ── T-F5 a destination other than the allowed one is refused ──
 
-    function test_TF5_UnsupportedDestinationBubblesFromInitialize() public {
+    function test_TF5_UnsupportedDestinationIsRefused() public {
         // The local domain is just one instance of "not the allowed destination".
         vm.expectRevert(ITransitForwarder.UnsupportedDestination.selector);
         factory.createForwarder(routeSender, LOCAL_DOMAIN, mintRecipient);
 
         vm.expectRevert(ITransitForwarder.UnsupportedDestination.selector);
         factory.createForwarder(routeSender, DEST_DOMAIN + 1, mintRecipient);
+    }
 
-        // Addresses were predictable but not deployable — the probe must still report false afterwards.
-        assertFalse(factory.isForwarderDeployed(routeSender, LOCAL_DOMAIN, mintRecipient));
-        assertFalse(factory.isForwarderDeployed(routeSender, DEST_DOMAIN + 1, mintRecipient));
+    // ── T-F5b the READ path fails closed too — the guard that actually protects funds ──
+
+    /// @dev ⚠️ FUNDS-CRITICAL. A source-chain burner reads getForwarderAddress and burns to whatever it returns,
+    ///      before any forwarder exists. CREATE2 predicts an address for an undeployable route just as happily as for
+    ///      a real one, and nothing about it looks wrong — so if prediction answered, a mistyped destinationDomain
+    ///      would only surface AFTER the funds were burned, with no way back (executeTransit and executeRefund both
+    ///      need the forwarder created, and it never can be).
+    function test_TF5b_PredictionRefusesRoutesThatCanNeverBeCreated() public {
+        uint32[2] memory badDomains = [LOCAL_DOMAIN, DEST_DOMAIN + 1];
+
+        for (uint256 i; i < badDomains.length; ++i) {
+            vm.expectRevert(ITransitForwarder.UnsupportedDestination.selector);
+            factory.getForwarderAddress(routeSender, badDomains[i], mintRecipient);
+
+            // `false` here would read as "not yet, but you could" — the exact misunderstanding that burns funds.
+            vm.expectRevert(ITransitForwarder.UnsupportedDestination.selector);
+            factory.isForwarderDeployed(routeSender, badDomains[i], mintRecipient);
+        }
+
+        // The other two creation guards cover the read path as well.
+        vm.expectRevert(ITransitForwarderFactory.ZeroAddress.selector);
+        factory.getForwarderAddress(address(0), DEST_DOMAIN, mintRecipient);
+
+        vm.expectRevert(ITransitForwarderFactory.EmptyMintRecipient.selector);
+        factory.getForwarderAddress(routeSender, DEST_DOMAIN, bytes32(0));
+
+        vm.expectRevert(ITransitForwarderFactory.ZeroAddress.selector);
+        factory.isForwarderDeployed(address(0), DEST_DOMAIN, mintRecipient);
+
+        vm.expectRevert(ITransitForwarderFactory.EmptyMintRecipient.selector);
+        factory.isForwarderDeployed(routeSender, DEST_DOMAIN, bytes32(0));
+
+        // The allowed route still answers, so the guard rejects only what creation would reject.
+        assertTrue(factory.getForwarderAddress(routeSender, DEST_DOMAIN, mintRecipient) != address(0));
+        assertFalse(factory.isForwarderDeployed(routeSender, DEST_DOMAIN, mintRecipient));
+    }
+
+    /// @dev The guard reads ALLOWED_DESTINATION_DOMAIN off the beacon's CURRENT impl, so a beacon upgrade that moves
+    ///      it moves what NEW routes may be created — in step with what `initialize` will accept. The two cannot
+    ///      disagree. Scope matters: this governs undeployed routes only, see TF5d.
+    function test_TF5c_PredictionGuardFollowsTheBeaconImplementation() public {
+        vm.expectRevert(ITransitForwarder.UnsupportedDestination.selector);
+        factory.getForwarderAddress(routeSender, DEST_DOMAIN + 1, mintRecipient);
+
+        factory.upgradeForwarderImplementation(address(_newImplWithDestination(DEST_DOMAIN + 1)));
+
+        // The formerly-refused destination is now the allowed one...
+        assertTrue(factory.getForwarderAddress(routeSender, DEST_DOMAIN + 1, mintRecipient) != address(0));
+        // ...and a NEW route to the formerly-allowed one is refused.
+        vm.expectRevert(ITransitForwarder.UnsupportedDestination.selector);
+        factory.getForwarderAddress(address(0xC0DE), DEST_DOMAIN, mintRecipient);
+    }
+
+    /// @dev ⚠️ REGRESSION GUARD. The destination gate reads the beacon's CURRENT impl, but a DEPLOYED forwarder keeps
+    ///      its destination in proxy storage forever and goes on transiting regardless (test_T36). So the gate must
+    ///      never apply to a route that already exists: if it did, one legitimate allowance move would make every
+    ///      live, funded route unresolvable through this factory — indexers, ops tooling and the create script all
+    ///      lose the ability to look up an address that is still receiving money. Code at the predicted address is
+    ///      itself proof the route was creatable, which is the only thing this gate has anything to say about.
+    function test_TF5d_DeployedRoutesStayResolvableAfterAnAllowanceMove() public {
+        address fwd = factory.createForwarder(routeSender, DEST_DOMAIN, mintRecipient);
+
+        factory.upgradeForwarderImplementation(address(_newImplWithDestination(DEST_DOMAIN + 1)));
+
+        // The live forwarder is untouched — still deployed, still routing to its ORIGINAL destination.
+        (, uint32 storedDomain,) = TransitForwarder(payable(fwd)).getRoute();
+        assertEq(storedDomain, DEST_DOMAIN, "an existing route keeps its destination");
+
+        // ...so the factory must still resolve it, even though DEST_DOMAIN is no longer creatable.
+        assertEq(factory.getForwarderAddress(routeSender, DEST_DOMAIN, mintRecipient), fwd, "live route must resolve");
+        assertTrue(factory.isForwarderDeployed(routeSender, DEST_DOMAIN, mintRecipient), "and report as deployed");
+
+        // Creating a NEW route to that destination is still refused — the gate did not go soft.
+        vm.expectRevert(ITransitForwarder.UnsupportedDestination.selector);
+        factory.createForwarder(address(0xC0DE), DEST_DOMAIN, mintRecipient);
     }
 
     // ── T-F6 topic0 separation rests on the event NAME, not on parameter types ──
