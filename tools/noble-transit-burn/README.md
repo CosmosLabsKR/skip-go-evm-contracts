@@ -1,125 +1,129 @@
 # noble-transit-burn
 
-Drives an end-to-end test of the transit path, in three commands:
+transit 경로를 처음부터 끝까지 실행해보는 도구. 커맨드 세 개로 구성된다.
 
-| Command | Hop | What it does |
+| 커맨드 | 구간 | 하는 일 |
 | --- | --- | --- |
-| `burn` | Noble → Avalanche | Builds (and optionally broadcasts) the CCTP v1 `depositForBurnWithCaller` |
-| `execute` | Avalanche → Injective | Fetches Circle's attestation and calls `TransitExecutor.executeTransit` |
-| `mint` | on Injective | Fetches the onward attestation and calls `MessageTransmitterV2.receiveMessage` |
+| `burn` | Noble → Avalanche | CCTP v1 `depositForBurnWithCaller`를 만들고, 원하면 브로드캐스트 |
+| `execute` | Avalanche → Injective | Circle 어테스테이션을 받아 `TransitExecutor.executeTransit` 호출 |
+| `mint` | Injective 도착 | onward 어테스테이션을 받아 `MessageTransmitterV2.receiveMessage` 호출 |
 
-## What the transaction has to say
+CCTP hop 자체는 두 번이다(Noble→Avalanche가 v1, Avalanche→Injective가 v2). 커맨드가 셋인 이유는 두 번째
+hop의 수신 쪽, 즉 Injective에서의 민팅이 별도 트랜잭션이기 때문이다.
 
-The transit is two CCTP hops:
+## 트랜잭션이 담아야 하는 것
 
 ```
-Noble (domain 4)                Avalanche Fuji (domain 1)              Injective (domain 29)
-  depositForBurnWithCaller  ──►  TransitExecutor.executeTransit   ──►   final recipient
-    mintRecipient     = predicted TransitForwarder                       (ROUTE_MINT_RECIPIENT)
+Noble (domain 4)                Avalanche (domain 1)                   Injective (domain 29)
+  depositForBurnWithCaller  ──►  TransitExecutor.executeTransit   ──►   최종 수취인
+    mintRecipient     = 예측된 TransitForwarder                          (ROUTE_MINT_RECIPIENT)
     destinationCaller = TransitExecutor
 ```
 
-Two fields carry the whole design:
+설계 전체를 지탱하는 필드는 두 개다.
 
-- **`destinationCaller` = TransitExecutor** (`0x015218cFdce7E8285DfFB16c457054EE2a441025`). Only that address may
-  call `receiveMessage` for this message, so the mint and the onward re-burn can only happen in one transaction.
-- **`mintRecipient` = the predicted TransitForwarder**, which does not exist yet. Its address is
-  `CREATE2(factory, keccak256(abi.encode(sender, destinationDomain, mintRecipient)), beaconInitCodeHash)` — the route
-  is engraved in the address, so committing to it here is what fixes the funds' final destination. The executor
-  creates the forwarder on first use.
+- **`destinationCaller` = TransitExecutor** (메인넷 `0xF9701898e7a543028d47A3913BC191CaE7371334`). 이 메시지에 대해
+  `receiveMessage`를 부를 수 있는 주소는 오직 이것뿐이므로, 민팅과 이어지는 재-burn은 한 트랜잭션 안에서만
+  일어날 수 있다.
+- **`mintRecipient` = 아직 존재하지 않는, 예측된 TransitForwarder.** 주소는
+  `CREATE2(factory, keccak256(abi.encode(sender, destinationDomain, mintRecipient)), beaconInitCodeHash)` —
+  라우트가 주소에 각인되어 있으므로, 여기서 이 주소를 지정하는 행위 자체가 자금의 최종 목적지를 확정한다.
+  포워더는 실제로 쓰이는 시점에 executor가 생성한다.
 
-The prediction is read from the **live factory** (`getForwarderAddress`), never recomputed locally: the factory's
-`beaconInitCodeHash` is frozen in its storage at initialize, and a local re-derivation from compiled bytecode can
-drift from it. The tool also checks that `TransitExecutor.factory()` is the factory it predicted against — otherwise
-the executor would reject the message with `RouteMismatch` after the funds are already burned.
+예측값은 로컬에서 다시 계산하지 않고 **살아 있는 팩토리**(`getForwarderAddress`)에서 읽는다. 팩토리의
+`beaconInitCodeHash`는 initialize 시점에 스토리지에 고정되는데, 컴파일된 바이트코드로 로컬 재계산을 하면 그
+값과 어긋날 수 있기 때문이다. 아울러 `TransitExecutor.factory()`가 예측에 사용한 그 팩토리인지도 확인한다.
+어긋나 있으면 자금이 이미 소각된 뒤에 executor가 `RouteMismatch`로 메시지를 거부하게 된다.
 
-## Setup
+## 준비
 
 ```bash
 npm install
-cp .env.example .env      # fill in ROUTE_MINT_RECIPIENT (required) and, to broadcast, NOBLE_PK
+cp .env.example .env      # ROUTE_MINT_RECIPIENT(필수), 브로드캐스트하려면 NOBLE_PK를 채운다
 ```
 
-Defaults target **Fuji + Noble grand-1** with the currently deployed executor/factory. For mainnet, override
-`NOBLE_RPC`, `NOBLE_CHAIN_ID`, `EVM_RPC` and the two contract addresses.
+`.env.example`은 현재 **메인넷**(Avalanche C-Chain + noble-1)의 배포된 executor/factory를 향한다. 테스트넷으로
+돌리려면 `NOBLE_RPC`, `NOBLE_CHAIN_ID`, `EVM_RPC`, 두 컨트랙트 주소, 그리고 `IRIS_API`를 함께 바꾼다. 어테스테이션
+서비스는 sandbox와 메인넷이 분리되어 있어서, 메인넷 burn을 sandbox로 조회하면 404가 난다.
 
-## Use
+## 사용법
 
-Both commands **simulate by default** and do nothing until you add the send flag.
+세 커맨드 모두 **기본은 시뮬레이션**이며, 전송 플래그를 붙이기 전에는 아무것도 보내지 않는다.
 
 ```bash
-# hop 1 — build only: prints the resolved route, predicted forwarder, writes an unsigned tx.json
+# hop 1 — 빌드만: 확정된 라우트와 예측 포워더를 출력하고, 서명 안 된 tx.json을 쓴다
 npm run burn -- --usdc 1.5
-npm run burn -- --usdc 1.5 --from noble1...    # when no key is configured
-npm run burn -- --usdc 1.5 --broadcast         # sign with NOBLE_PK and send
+npm run burn -- --usdc 1.5 --from noble1...    # 키를 설정하지 않았을 때
+npm run burn -- --usdc 1.5 --broadcast         # NOBLE_PK로 서명해서 전송
 
-# hop 2 — takes the Noble txhash printed by the burn
-npm run execute -- --tx <nobleTxHash>                  # fetch attestation, simulate, do not send
+# hop 2 — burn이 출력한 Noble txhash를 넣는다
+npm run execute -- --tx <nobleTxHash>                  # 어테스테이션 조회 + 시뮬레이션, 전송 안 함
 npm run execute -- --tx <nobleTxHash> --wait 900 --send
-npm run execute -- --tx <nobleTxHash> --refund --send  # mint and return to ROUTE_SENDER instead
+npm run execute -- --tx <nobleTxHash> --refund --send  # 민팅 후 ROUTE_SENDER로 되돌린다
 
-# hop 3 — takes the Avalanche txhash printed by execute
-npm run mint -- --tx <avalancheTxHash>                 # fetch attestation, simulate, do not send
+# hop 3 — execute가 출력한 Avalanche txhash를 넣는다
+npm run mint -- --tx <avalancheTxHash>                 # 어테스테이션 조회 + 시뮬레이션, 전송 안 함
 npm run mint -- --tx <avalancheTxHash> --wait 900 --send
 ```
 
-`--amount` takes uusdc (6 decimals) instead of whole USDC. `tx.json` is written in the shape `nobled tx sign` /
-`nobled tx broadcast` accept, so the burn can be signed by a key this tool never sees. Run either command with
-`--help` for its full option list.
+`--amount`는 USDC 단위 대신 uusdc(소수점 6자리)를 받는다. `tx.json`은 `nobled tx sign` / `nobled tx broadcast`가
+받아들이는 형태로 저장되므로, 이 도구가 한 번도 보지 않는 키로 burn에 서명할 수 있다. 각 커맨드에 `--help`를
+붙이면 전체 옵션이 나온다.
 
-### What `execute` checks before spending gas
+### `execute`가 가스를 쓰기 전에 확인하는 것
 
-Circle only attests a burn once it has finalised, so `--wait <seconds>` polls until the attestation appears; without
-it a single attempt is made. The burn is never lost by waiting — re-run `execute --tx <hash>` whenever.
+Circle은 burn이 파이널라이즈된 뒤에야 어테스테이션을 발급한다. `--wait <초>`는 어테스테이션이 나타날 때까지
+폴링하며, 없으면 한 번만 시도한다. 기다린다고 burn이 사라지지는 않으니 `execute --tx <hash>`는 언제든 다시
+실행하면 된다.
 
-Before building the call, the message is parsed (`src/cctpMessage.ts`, a mirror of the on-chain `CCTPV1Message`
-library) and checked against the configuration: version, source and destination domain, that it mints to the
-predicted forwarder, that it pins the executor as `destinationCaller`, and that the fee fits inside the minted
-amount. Every one of these is enforced on-chain too — this only turns an opaque revert that has already cost gas
-into a readable error. The executor's `operator()` is read and compared against `EVM_PK` for the same reason:
-`NotOperator` is the most common failure and the cheapest to catch.
+호출을 만들기 전에 메시지를 파싱해서(`src/cctpMessage.ts`, 온체인 `CCTPV1Message` 라이브러리의 거울) 설정과
+대조한다. 버전, 출발·도착 도메인, 예측된 포워더로 민팅되는지, executor가 `destinationCaller`로 고정되어
+있는지, 수수료가 민팅되는 금액 안에 들어가는지. 이 전부는 온체인에서도 강제되며, 여기서 하는 일은 이미
+가스를 쓴 뒤의 불투명한 revert를 읽을 수 있는 에러로 바꾸는 것뿐이다. executor의 `operator()`를 읽어
+`EVM_PK`와 비교하는 것도 같은 이유다. `NotOperator`는 가장 흔하면서 가장 싸게 잡을 수 있는 실패다.
 
-If the amount cannot cover the onward fee, `--refund` calls `executeRefund` instead: it mints and returns everything
-to `ROUTE_SENDER` with no second hop, and needs none of the fee parameters.
+금액이 onward 수수료를 감당하지 못하면 `--refund`가 대신 `executeRefund`를 부른다. 두 번째 hop 없이 민팅해서
+전부 `ROUTE_SENDER`로 돌려보내며, 수수료 관련 파라미터는 하나도 필요 없다.
 
-## Hop 3: the mint on Injective
+## hop 3: Injective에서의 민팅
 
-Injective's EVM runs Circle's stock CCTP v2 contracts — `MessageTransmitterV2` at its usual cross-chain address,
-reporting `localDomain() == 29` — so the last leg involves no contract of ours. `mint` fetches the attestation for
-the message the forwarder emitted and calls `receiveMessage`; the USDC mints to the `mintRecipient` the forwarder
-already committed to.
+Injective의 EVM은 Circle의 표준 CCTP v2 컨트랙트를 그대로 돌린다. `MessageTransmitterV2`가 여느 체인과 같은
+주소에 있고 `localDomain()`이 29를 리턴한다. 그래서 마지막 구간에는 우리 컨트랙트가 전혀 개입하지 않는다.
+`mint`는 포워더가 내보낸 메시지의 어테스테이션을 받아 `receiveMessage`를 부르고, USDC는 포워더가 이미
+확정해둔 `mintRecipient`로 민팅된다.
 
-**The attestation comes from a different API than hops 1–2.** The mint leg is CCTP v1, so `burn`/`execute` read
-`GET /v1/messages/4/{txHash}`. The onward leg is CCTP v2, which lives in a separate index:
-`GET /v2/messages/1?transactionHash={txHash}`. The two do not overlap and both answer 404 for anything they do not
-hold, so a v1 lookup of an Avalanche hash reports "Transaction hash not found" — not "pending". `mint` picks the v2
-endpoint itself and, on a miss, says which coordinates have to line up rather than polling in silence.
+**어테스테이션은 hop 1–2와 다른 API에서 온다.** 민팅 구간은 CCTP v1이라 `burn`/`execute`는
+`GET /v1/messages/4/{txHash}`를 읽는다. onward 구간은 CCTP v2이고 별도 인덱스에 있다:
+`GET /v2/messages/1?transactionHash={txHash}`. 둘은 겹치지 않으며 각자 갖고 있지 않은 것에 대해서는 모두 404를
+돌려준다. 그래서 Avalanche 해시를 v1로 조회하면 "pending"이 아니라 "Transaction hash not found"가 나온다.
+`mint`는 v2 엔드포인트를 알아서 고르고, 못 찾으면 조용히 폴링하는 대신 어떤 좌표가 맞아떨어져야 하는지
+알려준다.
 
-Nothing about this hop is a choice. `mintRecipient`, `amount` and `destinationCaller` were burned into the message
-on Avalanche and cannot be redirected afterwards, so every check `mint` runs is a comparison against what the
-message already says:
+이 hop에는 선택의 여지가 없다. `mintRecipient`, `amount`, `destinationCaller`는 Avalanche에서 메시지에 각인된
+값이고 사후에 방향을 바꿀 수 없다. 따라서 `mint`가 하는 모든 검사는 메시지가 이미 말하고 있는 내용과의
+대조다.
 
-- `destinationCaller` decides whether the command can act at all. It has to be an account you hold a key to **on
-  Injective**. Naming an Avalanche contract (the forwarder, the executor) produces a message nobody can ever
-  submit — the funds are burned on Avalanche and un-mintable on Injective, with no recovery path.
-- `mintRecipient` is compared against `ROUTE_MINT_RECIPIENT` and a mismatch is fatal. The transmitter itself does
-  not care who the recipient is: a drifted value would mint successfully, to someone else, permanently.
-- `usedNonces` is read first, so a second run reports "already minted" instead of reverting after gas.
+- `destinationCaller`가 이 커맨드가 무언가를 할 수 있는지 자체를 결정한다. **Injective에서** 키를 보유한
+  계정이어야 한다. Avalanche 컨트랙트(포워더, executor)를 지정하면 아무도 제출할 수 없는 메시지가 만들어진다.
+  자금은 Avalanche에서 소각되었고 Injective에서는 민팅 불가능한 상태가 되며, 회수 경로는 없다.
+- `mintRecipient`는 `ROUTE_MINT_RECIPIENT`와 대조하며 불일치는 치명적 오류로 처리한다. 트랜스미터 자신은
+  수취인이 누구인지 신경 쓰지 않는다. 값이 어긋난 메시지도 성공적으로, 남에게, 영구히 민팅된다.
+- `usedNonces`를 먼저 읽으므로, 재실행 시 가스를 쓰고 revert하는 대신 "이미 민팅됨"이라고 보고한다.
 
-The signing key is `INJECTIVE_PK`, falling back to `EVM_PK` — on a single-operator deployment the operator is
-usually also the pinned caller, and duplicating the key into two variables buys nothing.
+서명 키는 `INJECTIVE_PK`이며 없으면 `EVM_PK`로 폴백한다. 운영자가 하나뿐인 배포에서는 그 오퍼레이터가 보통
+고정된 caller이기도 해서, 같은 키를 변수 두 개에 복사해두는 것은 아무 이득이 없다.
 
-## Layout
+## 구성
 
-| File | Role |
+| 파일 | 역할 |
 | --- | --- |
-| `src/index.ts` | Command dispatch (`burn` / `execute` / `mint`) |
-| `src/config.ts` | Env resolution and validation; holds the deployed-testnet defaults |
-| `src/burn.ts` | Hop 1: assemble the Noble message, write `tx.json`, optionally sign and broadcast |
-| `src/execute.ts` | Hop 2: preflight the message and call `executeTransit` / `executeRefund` |
-| `src/mint.ts` | Hop 3: preflight the onward message and call `receiveMessage` on Injective |
-| `src/predict.ts` | Reads the forwarder address from the live factory, cross-checks the executor's factory |
-| `src/attestation.ts` | Polls Circle's Iris API — v1 for the mint leg, v2 for the onward leg |
-| `src/cctpMessage.ts` | Read-only mirror of the on-chain CCTP v1 message offsets |
-| `src/cctpV2Message.ts` | The same for CCTP v2 — a different layout, not an extension of v1 |
-| `src/proto.ts` | Hand-rolled codec for `circle.cctp.v1.MsgDepositForBurnWithCaller` (not in `cosmjs-types`) |
+| `src/index.ts` | 커맨드 디스패치 (`burn` / `execute` / `mint`) |
+| `src/config.ts` | 환경변수 해석과 검증. 배포된 테스트넷 기본값을 갖고 있다 |
+| `src/burn.ts` | hop 1: Noble 메시지 조립, `tx.json` 쓰기, 선택적으로 서명·브로드캐스트 |
+| `src/execute.ts` | hop 2: 메시지 프리플라이트 후 `executeTransit` / `executeRefund` 호출 |
+| `src/mint.ts` | hop 3: onward 메시지 프리플라이트 후 Injective에서 `receiveMessage` 호출 |
+| `src/predict.ts` | 살아 있는 팩토리에서 포워더 주소를 읽고, executor의 팩토리와 교차 확인 |
+| `src/attestation.ts` | Circle Iris API 폴링 — 민팅 구간은 v1, onward 구간은 v2 |
+| `src/cctpMessage.ts` | 온체인 CCTP v1 메시지 오프셋의 읽기 전용 거울 |
+| `src/cctpV2Message.ts` | CCTP v2용 같은 것 — v1의 확장이 아니라 완전히 다른 레이아웃 |
+| `src/proto.ts` | `circle.cctp.v1.MsgDepositForBurnWithCaller` 직접 구현 코덱 (`cosmjs-types`에 없음) |
