@@ -1,0 +1,33 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+solc = "0.8.30"
+# Injective EVM is confirmed to support PUSH0 (existing contracts run with PUSH0 bytecode).
+# With the paris setting, calls to contracts containing PUSH0 fail in revm with NotActivated, so paris is out.
+#
+# cancun (not shanghai) since the openzeppelin-contracts v5.6.1 bump: Strings.sol -> Bytes.sol uses `mcopy`, which
+# solc refuses to emit for shanghai. Injective EVM was probed directly before making the move — MCOPY (0x5e) and
+# TLOAD (0x5c) both execute on testnet AND mainnet (an undefined opcode errors there, so the probe discriminates).
+#
+# ⚠️ evm_version feeds type(BeaconProxy).creationCode, so changing it moves every predicted forwarder address and
+#    permanently breaks createForwarder on any factory already live. See the golden vector in
+#    test/UpgradeForwarderFactory.t.sol and _assertFactoryUpgradeKeepsAddressSpace in script/BaseScript.sol.
+evm_version = "cancun"
+optimizer = true
+optimizer_runs = 200
+# On for the stable release. mintAndRoute is dominated by two byte-at-a-time loops (_bytesToHexString over the memo,
+# and the CCTPV2Message offset parser), which is exactly what the IR pipeline optimises; measured -7% on the hot path
+# with the small memos the tests use, and the gap widens with realistic 200-500 byte memos. Same trade as evm_version
+# below: this feeds type(BeaconProxy).creationCode, so it can only be flipped for free while no factory is live.
+via_ir = true
+
+# ⚠️ FUNDS-CRITICAL, do not remove. solc embeds `settings.remappings` in the metadata blob appended to every
+# contract's bytecode, so the remapping LIST feeds type(BeaconProxy).creationCode and therefore every predicted
+# forwarder address. With auto-detection on, foundry derives extra remappings by scanning lib/, which means a
+# nested dependency directory merely EXISTING on the build machine silently moves the address space — three
+# different creationCode hashes were observed from one commit purely by varying which nested submodules were
+# checked out. Pinning to remappings.txt makes the build reproducible from tracked files alone.
+auto_detect_remappings = false
+
+# See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options
