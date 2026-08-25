@@ -12,7 +12,7 @@ import {TransitForwarderFactory} from "../src/TransitForwarderFactory.sol";
 import {TransitExecutor} from "../src/TransitExecutor.sol";
 import {ITransitForwarder} from "../src/interfaces/ITransitForwarder.sol";
 import {ITransitExecutor} from "../src/interfaces/ITransitExecutor.sol";
-import {ICCTPV2Relayer} from "../src/interfaces/ICCTPV2Relayer.sol";
+import {ITokenMessenger} from "../src/interfaces/ITokenMessenger.sol";
 import {IReceiver} from "../src/interfaces/IReceiver.sol";
 
 // ── Mocks ──────────────────────────────────────────────────────────────────
@@ -54,100 +54,50 @@ contract MockTransmitter is IReceiver {
     }
 }
 
-/// @dev PaymentContract mock that records CCTP v2 requestCCTPTransfer / requestCCTPTransferWithCaller and pulls USDC
-///      via transferFrom.
-contract MockCCTPV2Relayer is ICCTPV2Relayer {
+/// @dev Circle TokenMessengerV2 mock: records the depositForBurn arguments and pulls USDC via transferFrom, the
+///      way the real messenger does. depositForBurnWithHook is implemented ONLY so an accidental switch to the hook
+///      variant is observable (hookCallCount) — the transit path must never take it.
+contract MockTokenMessenger is ITokenMessenger {
     IERC20 public immutable usdc;
-    uint256 public lastTransferAmount;
+    uint256 public lastAmount;
     uint32 public lastDomain;
     bytes32 public lastMintRecipient;
     address public lastBurnToken;
-    uint256 public lastFeeAmount;
+    bytes32 public lastDestinationCaller;
     uint256 public lastMaxFee;
     uint32 public lastMinFinality;
-    bytes32 public lastDestinationCaller;
-    bytes public lastHookData;
-    bool public lastWasWithCaller;
     uint256 public callCount;
+    uint256 public hookCallCount;
 
     constructor(IERC20 _usdc) {
         usdc = _usdc;
     }
 
-    function requestCCTPTransfer(
-        uint256 transferAmount,
+    function depositForBurn(
+        uint256 amount,
         uint32 destinationDomain,
         bytes32 mintRecipient,
         address burnToken,
-        uint256 feeAmount,
-        uint256 maxFee,
-        uint32 minFinalityThreshold,
-        bytes calldata hookData
-    ) external {
-        require(usdc.transferFrom(msg.sender, address(this), transferAmount + feeAmount), "transferFrom failed");
-        _record(
-            transferAmount,
-            destinationDomain,
-            mintRecipient,
-            burnToken,
-            feeAmount,
-            maxFee,
-            minFinalityThreshold,
-            bytes32(0),
-            hookData,
-            false
-        );
-    }
-
-    function requestCCTPTransferWithCaller(
-        uint256 transferAmount,
-        uint32 destinationDomain,
-        bytes32 mintRecipient,
-        address burnToken,
-        uint256 feeAmount,
-        uint256 maxFee,
-        uint32 minFinalityThreshold,
         bytes32 destinationCaller,
-        bytes calldata hookData
-    ) external {
-        require(usdc.transferFrom(msg.sender, address(this), transferAmount + feeAmount), "transferFrom failed");
-        _record(
-            transferAmount,
-            destinationDomain,
-            mintRecipient,
-            burnToken,
-            feeAmount,
-            maxFee,
-            minFinalityThreshold,
-            destinationCaller,
-            hookData,
-            true
-        );
-    }
-
-    function _record(
-        uint256 transferAmount,
-        uint32 destinationDomain,
-        bytes32 mintRecipient_,
-        address burnToken,
-        uint256 feeAmount,
         uint256 maxFee,
-        uint32 minFinalityThreshold,
-        bytes32 destinationCaller,
-        bytes calldata hookData,
-        bool withCaller
-    ) private {
-        lastTransferAmount = transferAmount;
+        uint32 minFinalityThreshold
+    ) external {
+        require(usdc.transferFrom(msg.sender, address(this), amount), "transferFrom failed");
+        lastAmount = amount;
         lastDomain = destinationDomain;
-        lastMintRecipient = mintRecipient_;
+        lastMintRecipient = mintRecipient;
         lastBurnToken = burnToken;
-        lastFeeAmount = feeAmount;
+        lastDestinationCaller = destinationCaller;
         lastMaxFee = maxFee;
         lastMinFinality = minFinalityThreshold;
-        lastDestinationCaller = destinationCaller;
-        lastHookData = hookData;
-        lastWasWithCaller = withCaller;
         callCount++;
+    }
+
+    function depositForBurnWithHook(uint256 amount, uint32, bytes32, address, bytes32, uint256, uint32, bytes calldata)
+        external
+    {
+        require(usdc.transferFrom(msg.sender, address(this), amount), "transferFrom failed");
+        hookCallCount++;
     }
 }
 
@@ -156,7 +106,7 @@ contract MockCCTPV2Relayer is ICCTPV2Relayer {
 contract TransitForwarderTest is Test {
     MockUSDC usdc;
     MockTransmitter transmitter;
-    MockCCTPV2Relayer relayer;
+    MockTokenMessenger messengerMock;
     TransitExecutor executor;
     TransitForwarder impl;
     TransitForwarderFactory factory;
@@ -173,7 +123,6 @@ contract TransitForwarderTest is Test {
     bytes32 mintRecipient = bytes32(uint256(uint160(address(0xD00D))));
 
     uint256 constant AMOUNT = 1_000_000; // 1 USDC (6dp)
-    uint256 constant FEE = 10_000;
     uint256 constant MAX_FEE = 500;
     uint32 constant FINALITY = 2000;
     /// @dev Non-zero on every path: the executor rejects an unset destinationCaller.
@@ -183,8 +132,6 @@ contract TransitForwarderTest is Test {
     event TransitCompleted(
         bytes32 indexed sourceNonce,
         uint256 minted,
-        uint256 transferAmount,
-        uint256 feeAmount,
         uint256 maxFee,
         uint32 minFinalityThreshold,
         bytes32 destinationCaller
@@ -195,17 +142,21 @@ contract TransitForwarderTest is Test {
     function setUp() public {
         usdc = new MockUSDC();
         transmitter = new MockTransmitter(usdc);
-        relayer = new MockCCTPV2Relayer(usdc);
+        messengerMock = new MockTokenMessenger(usdc);
 
         // The executor is deployed FIRST and behind a proxy: the forwarder impl takes its address as an immutable,
         // and it must be the address that survives an executor upgrade. Mirrors the real deployment order.
         TransitExecutor executorImpl = new TransitExecutor(address(usdc), address(transmitter), operator);
         executor = TransitExecutor(
-            address(new ERC1967Proxy(address(executorImpl), abi.encodeCall(TransitExecutor.initialize, (address(this), address(0)))))
+            address(
+                new ERC1967Proxy(
+                    address(executorImpl), abi.encodeCall(TransitExecutor.initialize, (address(this), address(0)))
+                )
+            )
         );
 
         impl = new TransitForwarder(
-            address(usdc), address(relayer), operator, address(executor), LOCAL_DOMAIN, DEST_DOMAIN
+            address(usdc), address(messengerMock), operator, address(executor), LOCAL_DOMAIN, DEST_DOMAIN
         );
 
         TransitForwarderFactory factoryImpl = new TransitForwarderFactory();
@@ -262,25 +213,24 @@ contract TransitForwarderTest is Test {
         return bytes32(n);
     }
 
-    function _transit(bytes memory message, uint256 fee, uint256 maxFee, uint32 finality) internal {
+    function _transit(bytes memory message, uint256 maxFee, uint32 finality) internal {
         vm.prank(operator);
-        executor.executeTransit(message, "att", routeSender, DEST_DOMAIN, mintRecipient, fee, maxFee, finality, DEST_CALLER);
+        executor.executeTransit(message, "att", routeSender, DEST_DOMAIN, mintRecipient, maxFee, finality, DEST_CALLER);
     }
 
     // ── T-01 정상 transit ──
 
     function test_T01_MintAndTransfer_Happy() public {
         bytes memory msg_ = _goodMessage(AMOUNT, _nonce(1));
-        _transit(msg_, FEE, MAX_FEE, FINALITY);
+        _transit(msg_, MAX_FEE, FINALITY);
 
         assertEq(usdc.balanceOf(address(fwd)), 0, "forwarder must hold nothing after transit");
-        assertEq(relayer.callCount(), 1, "relayer called once");
-        assertEq(relayer.lastTransferAmount(), AMOUNT - FEE, "transferAmount = minted - feeAmount");
-        assertEq(relayer.lastFeeAmount(), FEE);
-        assertEq(relayer.lastMaxFee(), MAX_FEE);
-        assertEq(relayer.lastMinFinality(), FINALITY);
-        assertEq(relayer.lastBurnToken(), address(usdc), "burnToken must be THIS chain's usdc");
-        assertEq(usdc.balanceOf(address(relayer)), AMOUNT, "relayer pulled transferAmount + feeAmount");
+        assertEq(messengerMock.callCount(), 1, "messenger called once");
+        assertEq(messengerMock.lastAmount(), AMOUNT, "the WHOLE minted amount is burned - no fee is withheld");
+        assertEq(messengerMock.lastMaxFee(), MAX_FEE);
+        assertEq(messengerMock.lastMinFinality(), FINALITY);
+        assertEq(messengerMock.lastBurnToken(), address(usdc), "burnToken must be THIS chain's usdc");
+        assertEq(usdc.balanceOf(address(messengerMock)), AMOUNT, "messenger pulled exactly the minted amount");
     }
 
     // ── T-02 destinationCaller is always set ──
@@ -291,23 +241,31 @@ contract TransitForwarderTest is Test {
     function test_T02_OnwardBurnAlwaysRestrictsTheNextCaller() public {
         bytes32 destCaller = bytes32(uint256(uint160(address(0xCA11))));
         vm.prank(operator);
-        executor.executeTransit(_goodMessage(AMOUNT, _nonce(2)), "att", routeSender, DEST_DOMAIN, mintRecipient, FEE, MAX_FEE, FINALITY, destCaller);
+        executor.executeTransit(
+            _goodMessage(AMOUNT, _nonce(2)),
+            "att",
+            routeSender,
+            DEST_DOMAIN,
+            mintRecipient,
+            MAX_FEE,
+            FINALITY,
+            destCaller
+        );
 
-        assertTrue(relayer.lastWasWithCaller(), "the onward burn must always restrict its caller");
-        assertEq(relayer.lastDestinationCaller(), destCaller);
-        assertEq(relayer.lastTransferAmount(), AMOUNT - FEE);
+        assertEq(messengerMock.lastDestinationCaller(), destCaller, "the onward burn must always restrict its caller");
+        assertEq(messengerMock.lastAmount(), AMOUNT);
     }
 
     // ── T-03 route comes from storage, not from the operator's arguments ──
 
     function test_T03_RouteFromStorageNotArguments() public {
-        _transit(_goodMessage(AMOUNT, _nonce(3)), FEE, MAX_FEE, FINALITY);
+        _transit(_goodMessage(AMOUNT, _nonce(3)), MAX_FEE, FINALITY);
         (address s, uint32 d, bytes32 r) = fwd.getRoute();
         assertEq(s, routeSender);
         assertEq(d, DEST_DOMAIN);
         assertEq(r, mintRecipient);
-        assertEq(relayer.lastDomain(), DEST_DOMAIN, "relayer got the stored domain");
-        assertEq(relayer.lastMintRecipient(), mintRecipient, "relayer got the stored mintRecipient");
+        assertEq(messengerMock.lastDomain(), DEST_DOMAIN, "messenger got the stored domain");
+        assertEq(messengerMock.lastMintRecipient(), mintRecipient, "messenger got the stored mintRecipient");
     }
 
     // ── T-04 hookData passthrough ──
@@ -315,10 +273,12 @@ contract TransitForwarderTest is Test {
     /// @dev T-04 used to assert hookData passed through byte-identical. The transit path no longer carries hookData
     ///      at all — this design has no use for a hook on the onward burn, and CCTP v1 has no such concept — so the
     ///      property worth pinning is the inverse: the burn must ALWAYS be the plain depositForBurn variant.
-    ///      A non-empty hook would make the relayer call depositForBurnWithHook and change what arrives on Injective.
+    ///      depositForBurnWithHook would change what arrives on Injective, and v2 calls the messenger directly, so
+    ///      nothing between here and Circle would normalise a stray hook away.
     function test_T04_OnwardBurnCarriesNoHook() public {
-        _transit(_goodMessage(AMOUNT, _nonce(4)), FEE, MAX_FEE, FINALITY);
-        assertEq(relayer.lastHookData().length, 0, "the onward burn must carry no hook");
+        _transit(_goodMessage(AMOUNT, _nonce(4)), MAX_FEE, FINALITY);
+        assertEq(messengerMock.callCount(), 1, "plain depositForBurn");
+        assertEq(messengerMock.hookCallCount(), 0, "the onward burn must never take the hook variant");
     }
 
     // ── T-05 event ──
@@ -326,15 +286,15 @@ contract TransitForwarderTest is Test {
     function test_T05_TransitCompletedEvent() public {
         bytes32 n = _nonce(5);
         vm.expectEmit(true, false, false, true, address(fwd));
-        emit TransitCompleted(n, AMOUNT, AMOUNT - FEE, FEE, MAX_FEE, FINALITY, DEST_CALLER);
-        _transit(_goodMessage(AMOUNT, n), FEE, MAX_FEE, FINALITY);
+        emit TransitCompleted(n, AMOUNT, MAX_FEE, FINALITY, DEST_CALLER);
+        _transit(_goodMessage(AMOUNT, n), MAX_FEE, FINALITY);
     }
 
     // ── T-06 no residual allowance ──
 
     function test_T06_NoResidualAllowance() public {
-        _transit(_goodMessage(AMOUNT, _nonce(6)), FEE, MAX_FEE, FINALITY);
-        assertEq(usdc.allowance(address(fwd), address(relayer)), 0, "relayer must consume the whole approval");
+        _transit(_goodMessage(AMOUNT, _nonce(6)), MAX_FEE, FINALITY);
+        assertEq(usdc.allowance(address(fwd), address(messengerMock)), 0, "messenger must consume the whole approval");
     }
 
     // ── T-07 pre-existing dust is excluded from the delta ──
@@ -343,31 +303,27 @@ contract TransitForwarderTest is Test {
         uint256 dust = 777;
         usdc.mint(address(fwd), dust);
 
-        _transit(_goodMessage(AMOUNT, _nonce(7)), FEE, MAX_FEE, FINALITY);
+        _transit(_goodMessage(AMOUNT, _nonce(7)), MAX_FEE, FINALITY);
 
-        assertEq(relayer.lastTransferAmount(), AMOUNT - FEE, "dust must not inflate the transit amount");
-        assertEq(usdc.balanceOf(address(relayer)), AMOUNT, "relayer pulled exactly the minted amount");
+        assertEq(messengerMock.lastAmount(), AMOUNT, "dust must not inflate the transit amount");
+        assertEq(usdc.balanceOf(address(messengerMock)), AMOUNT, "messenger pulled exactly the minted amount");
         assertEq(usdc.balanceOf(address(fwd)), dust, "dust stays for recoverERC20");
     }
 
-    // ── T-08 feeAmount == 0 ──
+    // ── T-08 no fee is taken (the v2 change) ──
 
-    function test_T08_ZeroFeeReverts() public {
-        vm.prank(operator);
-        vm.expectRevert(ITransitForwarder.ZeroFee.selector);
-        executor.executeTransit(_goodMessage(AMOUNT, _nonce(8)), "att", routeSender, DEST_DOMAIN, mintRecipient, 0, MAX_FEE, FINALITY, DEST_CALLER);
-    }
+    /// @dev v1 forced a non-zero relayer fee (ZeroFee), because the PaymentContract rejected a zero one. v2 takes no
+    ///      fee at all, so the conservation property is exact: every unit minted is burned onward, and NOTHING is
+    ///      left behind on the forwarder or diverted anywhere else. A reintroduced fee would break this.
+    function test_T08_NoFeeIsWithheldAnywhere() public {
+        uint256 supplyBefore = usdc.totalSupply();
+        _transit(_goodMessage(AMOUNT, _nonce(8)), MAX_FEE, FINALITY);
 
-    /// @dev Ordering proof for _checkStaticParams running BEFORE the mint. A revert rolls back either way, so state
-    ///      cannot distinguish the two orderings — but the ERROR can: pair feeAmount == 0 with a message that would
-    ///      also fail the binding check. Getting ZeroFee (not WrongDestination) proves the static check came first.
-    function test_T08b_StaticParamsCheckedBeforeBinding() public {
-        bytes memory badBinding = _buildMessage(
-            WRONG_DOMAIN, _nonce(81), bytes32(uint256(uint160(routeSender))), address(0x5011), address(fwd), AMOUNT
-        );
-        vm.prank(operator);
-        vm.expectRevert(ITransitForwarder.ZeroFee.selector);
-        executor.executeTransit(badBinding, "att", routeSender, DEST_DOMAIN, mintRecipient, 0, MAX_FEE, FINALITY, DEST_CALLER);
+        assertEq(messengerMock.lastAmount(), AMOUNT, "the burned amount equals the minted amount exactly");
+        assertEq(usdc.balanceOf(address(fwd)), 0, "nothing withheld on the forwarder");
+        assertEq(usdc.balanceOf(address(executor)), 0, "nothing withheld on the executor");
+        assertEq(usdc.balanceOf(operator), 0, "nothing diverted to the operator");
+        assertEq(usdc.totalSupply() - supplyBefore, AMOUNT, "the mint is fully accounted for");
     }
 
     // ── T-09 / T-10 finality threshold ──
@@ -375,7 +331,9 @@ contract TransitForwarderTest is Test {
     function test_T09_InvalidFinalityReverts() public {
         vm.prank(operator);
         vm.expectRevert(ITransitForwarder.InvalidFinalityThreshold.selector);
-        executor.executeTransit(_goodMessage(AMOUNT, _nonce(9)), "att", routeSender, DEST_DOMAIN, mintRecipient, FEE, MAX_FEE, 1500, DEST_CALLER);
+        executor.executeTransit(
+            _goodMessage(AMOUNT, _nonce(9)), "att", routeSender, DEST_DOMAIN, mintRecipient, MAX_FEE, 1500, DEST_CALLER
+        );
     }
 
     function test_T09b_FinalityCheckedBeforeBinding() public {
@@ -384,62 +342,80 @@ contract TransitForwarderTest is Test {
         );
         vm.prank(operator);
         vm.expectRevert(ITransitForwarder.InvalidFinalityThreshold.selector);
-        executor.executeTransit(badBinding, "att", routeSender, DEST_DOMAIN, mintRecipient, FEE, MAX_FEE, 1500, DEST_CALLER);
+        executor.executeTransit(badBinding, "att", routeSender, DEST_DOMAIN, mintRecipient, MAX_FEE, 1500, DEST_CALLER);
     }
 
     function test_T10_BothFinalityValuesAccepted() public {
-        _transit(_goodMessage(AMOUNT, _nonce(101)), FEE, MAX_FEE, 1000);
-        assertEq(relayer.lastMinFinality(), 1000);
-        _transit(_goodMessage(AMOUNT, _nonce(102)), FEE, MAX_FEE, 2000);
-        assertEq(relayer.lastMinFinality(), 2000);
+        _transit(_goodMessage(AMOUNT, _nonce(101)), MAX_FEE, 1000);
+        assertEq(messengerMock.lastMinFinality(), 1000);
+        _transit(_goodMessage(AMOUNT, _nonce(102)), MAX_FEE, 2000);
+        assertEq(messengerMock.lastMinFinality(), 2000);
     }
 
-    // ── T-11 ~ T-14 _split boundaries ──
+    // ── T-11 ~ T-14 maxFee boundaries (v2 bounds it against `minted`, since nothing is deducted first) ──
 
-    function test_T11_FeeEqualsMintedReverts() public {
-        vm.prank(operator);
-        vm.expectRevert(ITransitForwarder.FeeExceedsMinted.selector);
-        executor.executeTransit(_goodMessage(AMOUNT, _nonce(11)), "att", routeSender, DEST_DOMAIN, mintRecipient, AMOUNT, 0, FINALITY, DEST_CALLER);
-    }
-
-    function test_T12_FeeAboveMintedReverts() public {
-        vm.prank(operator);
-        vm.expectRevert(ITransitForwarder.FeeExceedsMinted.selector);
-        executor.executeTransit(_goodMessage(AMOUNT, _nonce(12)), "att", routeSender, DEST_DOMAIN, mintRecipient, AMOUNT + 1, 0, FINALITY, DEST_CALLER);
-    }
-
-    function test_T13_MinimalTransferAmountOfOne() public {
-        _transit(_goodMessage(AMOUNT, _nonce(13)), AMOUNT - 1, 0, FINALITY);
-        assertEq(relayer.lastTransferAmount(), 1, "transferAmount == 1 is valid");
-        assertEq(relayer.lastFeeAmount(), AMOUNT - 1);
-    }
-
-    function test_T14_MaxFeeEqualToTransferAmountReverts() public {
-        // transferAmount would be AMOUNT - FEE; maxFee equal to it must fail (v2 requires strict <).
+    function test_T11_MaxFeeEqualToMintedReverts() public {
         vm.prank(operator);
         vm.expectRevert(ITransitForwarder.InvalidMaxFee.selector);
-        executor.executeTransit(_goodMessage(AMOUNT, _nonce(14)), "att", routeSender, DEST_DOMAIN, mintRecipient, FEE, AMOUNT - FEE, FINALITY, DEST_CALLER);
+        executor.executeTransit(
+            _goodMessage(AMOUNT, _nonce(11)),
+            "att",
+            routeSender,
+            DEST_DOMAIN,
+            mintRecipient,
+            AMOUNT,
+            FINALITY,
+            DEST_CALLER
+        );
+    }
+
+    function test_T12_MaxFeeAboveMintedReverts() public {
+        vm.prank(operator);
+        vm.expectRevert(ITransitForwarder.InvalidMaxFee.selector);
+        executor.executeTransit(
+            _goodMessage(AMOUNT, _nonce(12)),
+            "att",
+            routeSender,
+            DEST_DOMAIN,
+            mintRecipient,
+            AMOUNT + 1,
+            FINALITY,
+            DEST_CALLER
+        );
+    }
+
+    /// @dev The accepting side of the same strict boundary: maxFee == minted - 1 is the largest legal value.
+    function test_T13_MaxFeeJustBelowMintedAccepted() public {
+        _transit(_goodMessage(AMOUNT, _nonce(13)), AMOUNT - 1, FINALITY);
+        assertEq(messengerMock.lastAmount(), AMOUNT, "the full amount is still burned");
+        assertEq(messengerMock.lastMaxFee(), AMOUNT - 1);
+    }
+
+    /// @dev A one-unit transit: the smallest amount for which a legal maxFee (0) exists.
+    function test_T14_MinimalTransitOfOneUnit() public {
+        _transit(_goodMessage(1, _nonce(14)), 0, FINALITY);
+        assertEq(messengerMock.lastAmount(), 1);
     }
 
     function test_T14b_MaxFeeZeroAccepted() public {
-        _transit(_goodMessage(AMOUNT, _nonce(141)), FEE, 0, FINALITY);
-        assertEq(relayer.lastMaxFee(), 0);
+        _transit(_goodMessage(AMOUNT, _nonce(141)), 0, FINALITY);
+        assertEq(messengerMock.lastMaxFee(), 0);
     }
 
     // ── T-15 a failed attempt leaves the nonce spendable ──
 
-    function test_T15_RetryAfterFailedSplit() public {
+    function test_T15_RetryAfterFailedMaxFee() public {
         bytes32 n = _nonce(15);
         bytes memory msg_ = _goodMessage(AMOUNT, n);
 
         vm.prank(operator);
-        vm.expectRevert(ITransitForwarder.FeeExceedsMinted.selector);
-        executor.executeTransit(msg_, "att", routeSender, DEST_DOMAIN, mintRecipient, AMOUNT, 0, FINALITY, DEST_CALLER);
+        vm.expectRevert(ITransitForwarder.InvalidMaxFee.selector);
+        executor.executeTransit(msg_, "att", routeSender, DEST_DOMAIN, mintRecipient, AMOUNT, FINALITY, DEST_CALLER);
 
         assertFalse(transmitter.usedNonce(n), "the whole tx rolled back, so the nonce is unspent");
 
-        _transit(msg_, FEE, MAX_FEE, FINALITY); // same message, corrected parameters
-        assertEq(relayer.lastTransferAmount(), AMOUNT - FEE);
+        _transit(msg_, MAX_FEE, FINALITY); // same message, corrected parameters
+        assertEq(messengerMock.lastAmount(), AMOUNT);
         assertTrue(transmitter.usedNonce(n));
     }
 
@@ -451,7 +427,7 @@ contract TransitForwarderTest is Test {
         );
         vm.prank(operator);
         vm.expectRevert(ITransitForwarder.WrongDestination.selector);
-        executor.executeTransit(m, "att", routeSender, DEST_DOMAIN, mintRecipient, FEE, MAX_FEE, FINALITY, DEST_CALLER);
+        executor.executeTransit(m, "att", routeSender, DEST_DOMAIN, mintRecipient, MAX_FEE, FINALITY, DEST_CALLER);
     }
 
     /// @dev Reached by calling the forwarder DIRECTLY as the executor, because the honest path cannot produce it:
@@ -472,20 +448,31 @@ contract TransitForwarderTest is Test {
         usdc.mint(address(fwd), AMOUNT); // the balance bound must not be what rejects this
         vm.prank(address(executor));
         vm.expectRevert(ITransitForwarder.WrongRecipient.selector);
-        fwd.transferMinted(m, AMOUNT, FEE, MAX_FEE, FINALITY, DEST_CALLER);
+        fwd.transferMinted(m, AMOUNT, MAX_FEE, FINALITY, DEST_CALLER);
     }
 
     function test_T18_ReceiveFailed() public {
         transmitter.setForceFail(true);
         vm.prank(operator);
         vm.expectRevert(ITransitExecutor.ReceiveFailed.selector);
-        executor.executeTransit(_goodMessage(AMOUNT, _nonce(18)), "att", routeSender, DEST_DOMAIN, mintRecipient, FEE, MAX_FEE, FINALITY, DEST_CALLER);
+        executor.executeTransit(
+            _goodMessage(AMOUNT, _nonce(18)),
+            "att",
+            routeSender,
+            DEST_DOMAIN,
+            mintRecipient,
+            MAX_FEE,
+            FINALITY,
+            DEST_CALLER
+        );
     }
 
     function test_T19_NothingMinted() public {
         vm.prank(operator);
         vm.expectRevert(ITransitExecutor.NothingMinted.selector);
-        executor.executeTransit(_goodMessage(0, _nonce(19)), "att", routeSender, DEST_DOMAIN, mintRecipient, FEE, MAX_FEE, FINALITY, DEST_CALLER);
+        executor.executeTransit(
+            _goodMessage(0, _nonce(19)), "att", routeSender, DEST_DOMAIN, mintRecipient, MAX_FEE, FINALITY, DEST_CALLER
+        );
     }
 
     /// @dev T-20 used to assert a named MalformedMessage on a short message. That gate is gone on purpose — the
@@ -496,18 +483,19 @@ contract TransitForwarderTest is Test {
         usdc.mint(address(fwd), AMOUNT);
         vm.prank(address(executor));
         vm.expectRevert();
-        fwd.transferMinted(short_, AMOUNT, FEE, MAX_FEE, FINALITY, DEST_CALLER);
+        fwd.transferMinted(short_, AMOUNT, MAX_FEE, FINALITY, DEST_CALLER);
     }
 
     function test_T21_NonceReplayRejected() public {
         bytes32 n = _nonce(21);
-        _transit(_goodMessage(AMOUNT, n), FEE, MAX_FEE, FINALITY);
+        _transit(_goodMessage(AMOUNT, n), MAX_FEE, FINALITY);
 
         vm.prank(operator);
         vm.expectRevert(ITransitExecutor.ReceiveFailed.selector);
-        executor.executeTransit(_goodMessage(AMOUNT, n), "att", routeSender, DEST_DOMAIN, mintRecipient, FEE, MAX_FEE, FINALITY, DEST_CALLER);
+        executor.executeTransit(
+            _goodMessage(AMOUNT, n), "att", routeSender, DEST_DOMAIN, mintRecipient, MAX_FEE, FINALITY, DEST_CALLER
+        );
     }
-
 
     // ── T-22 refund at mint time ──
 
@@ -569,16 +557,16 @@ contract TransitForwarderTest is Test {
         vm.startPrank(attacker);
         // Transit surface: executor-gated on the forwarder, operator-gated on the executor in front of it.
         vm.expectRevert(ITransitForwarder.NotExecutor.selector);
-        fwd.transferMinted(m, AMOUNT, FEE, MAX_FEE, FINALITY, DEST_CALLER);
+        fwd.transferMinted(m, AMOUNT, MAX_FEE, FINALITY, DEST_CALLER);
 
         vm.expectRevert(ITransitForwarder.NotExecutor.selector);
-        fwd.transferMinted(m, AMOUNT, FEE, MAX_FEE, FINALITY, DEST_CALLER);
+        fwd.transferMinted(m, AMOUNT, MAX_FEE, FINALITY, DEST_CALLER);
 
         vm.expectRevert(ITransitForwarder.NotExecutor.selector);
         fwd.refundMinted(m, AMOUNT);
 
         vm.expectRevert(ITransitExecutor.NotOperator.selector);
-        executor.executeTransit(m, "att", routeSender, DEST_DOMAIN, mintRecipient, FEE, MAX_FEE, FINALITY, DEST_CALLER);
+        executor.executeTransit(m, "att", routeSender, DEST_DOMAIN, mintRecipient, MAX_FEE, FINALITY, DEST_CALLER);
 
         // Recovery surface: operator-gated.
         vm.expectRevert(ITransitForwarder.NotOperator.selector);
@@ -593,9 +581,12 @@ contract TransitForwarderTest is Test {
 
     /// @dev Computed from string literals, not from the interface, so a signature edit cannot silently move the
     ///      target along with the assertion. Any change here breaks every deployed log consumer.
+    /// @dev ⚠️ TransitCompleted's topic0 CHANGED in forwarder v2 (feeAmount and transferAmount removed) — that break
+    ///      was deliberate and is announced in ITransitForwarder. Refunded and Recovered did NOT change, and this
+    ///      test is what keeps the v2 signature frozen from here on.
     function test_T37_EventTopic0sAreUnchanged() public {
         assertEq(
-            keccak256("TransitCompleted(bytes32,uint256,uint256,uint256,uint256,uint32,bytes32)"),
+            keccak256("TransitCompleted(bytes32,uint256,uint256,uint32,bytes32)"),
             TransitCompleted.selector,
             "TransitCompleted signature drifted"
         );
@@ -614,7 +605,7 @@ contract TransitForwarderTest is Test {
         // The operator cannot push funds, even along the legitimate route.
         vm.prank(operator);
         vm.expectRevert(ITransitForwarder.NotExecutor.selector);
-        fwd.transferMinted(m, AMOUNT, FEE, MAX_FEE, FINALITY, DEST_CALLER);
+        fwd.transferMinted(m, AMOUNT, MAX_FEE, FINALITY, DEST_CALLER);
 
         vm.prank(operator);
         vm.expectRevert(ITransitForwarder.NotExecutor.selector);
@@ -641,7 +632,7 @@ contract TransitForwarderTest is Test {
 
         vm.prank(address(executor));
         vm.expectRevert(ITransitForwarder.EmptyDestinationCaller.selector);
-        fwd.transferMinted(m, AMOUNT, FEE, MAX_FEE, FINALITY, bytes32(0));
+        fwd.transferMinted(m, AMOUNT, MAX_FEE, FINALITY, bytes32(0));
     }
 
     /// @dev The forwarder holds the attested message, so it can check the reported amount against it rather than
@@ -652,7 +643,7 @@ contract TransitForwarderTest is Test {
 
         vm.prank(address(executor));
         vm.expectRevert(ITransitForwarder.AmountMismatch.selector);
-        fwd.transferMinted(m, AMOUNT - 1, FEE, MAX_FEE, FINALITY, DEST_CALLER);
+        fwd.transferMinted(m, AMOUNT - 1, MAX_FEE, FINALITY, DEST_CALLER);
     }
 
     // ── T-39 / T-40 the bound on the executor-reported amount ──
@@ -663,16 +654,15 @@ contract TransitForwarderTest is Test {
 
         vm.prank(address(executor));
         vm.expectRevert(ITransitForwarder.MissingBalance.selector);
-        fwd.transferMinted(m, AMOUNT + 1, FEE, MAX_FEE, FINALITY, DEST_CALLER);
+        fwd.transferMinted(m, AMOUNT + 1, MAX_FEE, FINALITY, DEST_CALLER);
     }
 
     function test_T40_ZeroMintedReverts() public {
         bytes memory m = _goodMessage(AMOUNT, _nonce(40));
         vm.prank(address(executor));
         vm.expectRevert(ITransitForwarder.ZeroAmount.selector);
-        fwd.transferMinted(m, 0, FEE, MAX_FEE, FINALITY, DEST_CALLER);
+        fwd.transferMinted(m, 0, MAX_FEE, FINALITY, DEST_CALLER);
     }
-
 
     // ── T-27 native coin rejected ──
 
@@ -713,8 +703,8 @@ contract TransitForwarderTest is Test {
             address(fwd),
             AMOUNT
         );
-        _transit(m, FEE, MAX_FEE, FINALITY);
-        assertEq(relayer.lastTransferAmount(), AMOUNT - FEE, "non-EVM source must transit normally");
+        _transit(m, MAX_FEE, FINALITY);
+        assertEq(messengerMock.lastAmount(), AMOUNT, "non-EVM source must transit normally");
     }
 
     // ── T-31 storage layout (packing is a beacon-upgrade invariant) ──
@@ -736,34 +726,35 @@ contract TransitForwarderTest is Test {
 
     function test_T32_ConstructorRejectsZeroAddresses() public {
         vm.expectRevert(ITransitForwarder.ZeroAddress.selector);
-        new TransitForwarder(address(0), address(relayer), operator, address(executor), LOCAL_DOMAIN, DEST_DOMAIN);
+        new TransitForwarder(address(0), address(messengerMock), operator, address(executor), LOCAL_DOMAIN, DEST_DOMAIN);
 
         vm.expectRevert(ITransitForwarder.ZeroAddress.selector);
         new TransitForwarder(address(usdc), address(0), operator, address(executor), LOCAL_DOMAIN, DEST_DOMAIN);
 
         vm.expectRevert(ITransitForwarder.ZeroAddress.selector);
-        new TransitForwarder(address(usdc), address(relayer), address(0), address(executor), LOCAL_DOMAIN, DEST_DOMAIN);
+        new TransitForwarder(
+            address(usdc), address(messengerMock), address(0), address(executor), LOCAL_DOMAIN, DEST_DOMAIN
+        );
 
         vm.expectRevert(ITransitForwarder.ZeroAddress.selector);
-        new TransitForwarder(
-            address(usdc), address(relayer), operator, address(0), LOCAL_DOMAIN, DEST_DOMAIN
-        );
+        new TransitForwarder(address(usdc), address(messengerMock), operator, address(0), LOCAL_DOMAIN, DEST_DOMAIN);
     }
 
-    function test_T33_ConstructorRejectsUsdcMismatch() public {
-        MockUSDC otherUsdc = new MockUSDC();
-        MockCCTPV2Relayer wrongRelayer = new MockCCTPV2Relayer(otherUsdc);
-        vm.expectRevert(ITransitForwarder.UsdcMismatch.selector);
-        new TransitForwarder(
-            address(usdc), address(wrongRelayer), operator, address(executor), LOCAL_DOMAIN, DEST_DOMAIN
-        );
+    /// @dev v1 asserted `paymentContract.usdc() == usdc` in the constructor (UsdcMismatch). ITokenMessenger has no
+    ///      such getter, so that guard is gone and THIS is what replaced it: burnToken is always the impl's own
+    ///      `usdc` immutable, never a value read from the message. The message's burnToken is a SOURCE-domain
+    ///      address (0x5011 here) and forwarding it would burn the wrong token — or nothing at all.
+    function test_T33_BurnTokenIsAlwaysThisChainsUsdc() public {
+        _transit(_goodMessage(AMOUNT, _nonce(33)), MAX_FEE, FINALITY);
+        assertEq(messengerMock.lastBurnToken(), address(usdc), "burnToken must be the impl's usdc immutable");
+        assertTrue(messengerMock.lastBurnToken() != address(0x5011), "never the message's source-domain burnToken");
     }
 
     /// @dev A deployment whose only allowed destination is its own chain could never produce a usable route.
     function test_T34_ConstructorRejectsSelfLoopConfig() public {
         vm.expectRevert(ITransitForwarder.SelfLoop.selector);
         new TransitForwarder(
-            address(usdc), address(relayer), operator, address(executor), LOCAL_DOMAIN, LOCAL_DOMAIN
+            address(usdc), address(messengerMock), operator, address(executor), LOCAL_DOMAIN, LOCAL_DOMAIN
         );
     }
 
@@ -782,7 +773,7 @@ contract TransitForwarderTest is Test {
     ///      address (and the burner's committed mintRecipient) encode the original destination.
     function test_T36_BeaconUpgradeCannotRedirectExistingRoute() public {
         TransitForwarder movedAllowance = new TransitForwarder(
-            address(usdc), address(relayer), operator, address(executor), LOCAL_DOMAIN, OTHER_DEST_DOMAIN
+            address(usdc), address(messengerMock), operator, address(executor), LOCAL_DOMAIN, OTHER_DEST_DOMAIN
         );
         factory.upgradeForwarderImplementation(address(movedAllowance));
 
@@ -790,7 +781,7 @@ contract TransitForwarderTest is Test {
         (, uint32 storedDomain,) = fwd.getRoute();
         assertEq(storedDomain, DEST_DOMAIN, "the route's own destination must be untouched");
 
-        _transit(_goodMessage(AMOUNT, _nonce(36)), FEE, MAX_FEE, FINALITY);
-        assertEq(relayer.lastDomain(), DEST_DOMAIN, "funds must still go where the address committed");
+        _transit(_goodMessage(AMOUNT, _nonce(36)), MAX_FEE, FINALITY);
+        assertEq(messengerMock.lastDomain(), DEST_DOMAIN, "funds must still go where the address committed");
     }
 }

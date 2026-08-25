@@ -11,7 +11,7 @@ import {TransitForwarder} from "../src/TransitForwarder.sol";
 import {TransitForwarderFactory} from "../src/TransitForwarderFactory.sol";
 import {ITransitForwarder} from "../src/interfaces/ITransitForwarder.sol";
 import {ITransitForwarderFactory} from "../src/interfaces/ITransitForwarderFactory.sol";
-import {ICCTPV2Relayer} from "../src/interfaces/ICCTPV2Relayer.sol";
+import {ITokenMessenger} from "../src/interfaces/ITokenMessenger.sol";
 
 // ── Minimal mocks (the factory suite only needs the constructor guards to be satisfiable) ──
 
@@ -19,38 +19,26 @@ contract MockUSDC is ERC20 {
     constructor() ERC20("USD Coin", "USDC") {}
 }
 
+/// @dev Inert TokenMessengerV2 stand-in. These suites never burn — they only need a typed, non-zero address to
+///      put in the forwarder's `messenger` immutable.
+contract MockMessengerStub is ITokenMessenger {
+    function depositForBurn(uint256, uint32, bytes32, address, bytes32, uint256, uint32) external pure {}
 
-contract MockRelayerStub is ICCTPV2Relayer {
-    IERC20 public immutable usdc;
-
-    constructor(IERC20 _usdc) {
-        usdc = _usdc;
-    }
-
-    function requestCCTPTransfer(uint256, uint32, bytes32, address, uint256, uint256, uint32, bytes calldata)
+    function depositForBurnWithHook(uint256, uint32, bytes32, address, bytes32, uint256, uint32, bytes calldata)
         external
-        pure
-    {}
-
-    function requestCCTPTransferWithCaller(
-        uint256,
-        uint32,
-        bytes32,
-        address,
-        uint256,
-        uint256,
-        uint32,
-        bytes32,
-        bytes calldata
-    ) external pure {}
+        pure {}
 }
 
-/// @dev Bumped `version()` used to prove a beacon/UUPS upgrade actually swapped logic.
-contract TransitForwarderV2 is TransitForwarder {
-    constructor(address u, address p, address o, address e, uint32 l, uint32 dst) TransitForwarder(u, p, o, e, l, dst) {}
+/// @dev Bumped `version()` used to prove a beacon/UUPS upgrade actually swapped logic. It is 3 because the real
+///      TransitForwarder is now at 2 (the fee removal) — this must stay strictly ahead of it to keep proving that
+///      the upgrade, and not the baseline, is what the deployed proxies observe.
+contract TransitForwarderV3 is TransitForwarder {
+    constructor(address u, address m, address o, address e, uint32 l, uint32 dst)
+        TransitForwarder(u, m, o, e, l, dst)
+    {}
 
     function version() external pure override returns (uint256) {
-        return 2;
+        return 3;
     }
 }
 
@@ -65,7 +53,7 @@ contract TransitForwarderFactoryTest is Test {
     /// @dev The forwarder only stores this address and gates on it; the factory tests never call a transit entry
     ///      point, so a plain address stands in for the executor proxy here.
     address constant EXECUTOR = address(0xE8EC00);
-    MockRelayerStub relayer;
+    MockMessengerStub messengerStub;
     TransitForwarder impl;
     TransitForwarderFactory factory;
 
@@ -81,10 +69,9 @@ contract TransitForwarderFactoryTest is Test {
 
     function setUp() public {
         usdc = new MockUSDC();
-        relayer = new MockRelayerStub(usdc);
-        impl = new TransitForwarder(
-            address(usdc), address(relayer), operator, EXECUTOR, LOCAL_DOMAIN, DEST_DOMAIN
-        );
+        messengerStub = new MockMessengerStub();
+        impl =
+            new TransitForwarder(address(usdc), address(messengerStub), operator, EXECUTOR, LOCAL_DOMAIN, DEST_DOMAIN);
 
         TransitForwarderFactory factoryImpl = new TransitForwarderFactory();
         factory = TransitForwarderFactory(
@@ -96,16 +83,15 @@ contract TransitForwarderFactoryTest is Test {
         );
     }
 
-    function _newImpl() internal returns (TransitForwarderV2) {
-        return new TransitForwarderV2(
-            address(usdc), address(relayer), operator, EXECUTOR, LOCAL_DOMAIN, DEST_DOMAIN
-        );
+    function _newImpl() internal returns (TransitForwarderV3) {
+        return
+            new TransitForwarderV3(address(usdc), address(messengerStub), operator, EXECUTOR, LOCAL_DOMAIN, DEST_DOMAIN);
     }
 
     /// @dev Same executor (so upgradeForwarderImplementation accepts it), different allowed destination.
     function _newImplWithDestination(uint32 allowedDestination) internal returns (TransitForwarder) {
         return new TransitForwarder(
-            address(usdc), address(relayer), operator, EXECUTOR, LOCAL_DOMAIN, allowedDestination
+            address(usdc), address(messengerStub), operator, EXECUTOR, LOCAL_DOMAIN, allowedDestination
         );
     }
 
@@ -130,9 +116,7 @@ contract TransitForwarderFactoryTest is Test {
 
     function test_TF2_DuplicateCreateReverts() public {
         address deployed = factory.createForwarder(routeSender, DEST_DOMAIN, mintRecipient);
-        vm.expectRevert(
-            abi.encodeWithSelector(ITransitForwarderFactory.ForwarderAlreadyDeployed.selector, deployed)
-        );
+        vm.expectRevert(abi.encodeWithSelector(ITransitForwarderFactory.ForwarderAlreadyDeployed.selector, deployed));
         factory.createForwarder(routeSender, DEST_DOMAIN, mintRecipient);
     }
 
@@ -258,13 +242,13 @@ contract TransitForwarderFactoryTest is Test {
 
     function test_TF7_BeaconUpgradeKeepsAddressesSwapsLogic() public {
         address fwd = factory.createForwarder(routeSender, DEST_DOMAIN, mintRecipient);
-        assertEq(TransitForwarder(payable(fwd)).version(), 1);
+        assertEq(TransitForwarder(payable(fwd)).version(), 2);
 
         address beaconBefore = factory.beacon();
         factory.upgradeForwarderImplementation(address(_newImpl()));
 
         assertEq(factory.beacon(), beaconBefore, "beacon address must not change");
-        assertEq(TransitForwarder(payable(fwd)).version(), 2, "deployed forwarder must see new logic");
+        assertEq(TransitForwarder(payable(fwd)).version(), 3, "deployed forwarder must see new logic");
 
         // Route storage survives the logic swap.
         (address s, uint32 d, bytes32 r) = TransitForwarder(payable(fwd)).getRoute();
@@ -289,12 +273,13 @@ contract TransitForwarderFactoryTest is Test {
     function test_TF7b_ExecutorIsAdoptedAndFrozen() public {
         assertEq(factory.executor(), EXECUTOR, "adopted from the first implementation");
 
-        TransitForwarderV2 sameExecutor =
-            new TransitForwarderV2(address(usdc), address(relayer), operator, EXECUTOR, LOCAL_DOMAIN, DEST_DOMAIN);
+        TransitForwarderV3 sameExecutor = new TransitForwarderV3(
+            address(usdc), address(messengerStub), operator, EXECUTOR, LOCAL_DOMAIN, DEST_DOMAIN
+        );
         factory.upgradeForwarderImplementation(address(sameExecutor)); // must not revert
 
-        TransitForwarderV2 otherExecutor = new TransitForwarderV2(
-            address(usdc), address(relayer), operator, address(0xBADE8EC), LOCAL_DOMAIN, DEST_DOMAIN
+        TransitForwarderV3 otherExecutor = new TransitForwarderV3(
+            address(usdc), address(messengerStub), operator, address(0xBADE8EC), LOCAL_DOMAIN, DEST_DOMAIN
         );
         vm.expectRevert(TransitForwarderFactory.ExecutorMismatch.selector);
         factory.upgradeForwarderImplementation(address(otherExecutor));
@@ -312,9 +297,7 @@ contract TransitForwarderFactoryTest is Test {
         assertEq(factory.version(), 2, "factory logic swapped");
         assertEq(factory.beacon(), beaconBefore, "beacon must survive the factory upgrade");
         assertEq(factory.beaconInitCodeHash(), hashBefore, "frozen initCodeHash must survive");
-        assertEq(
-            factory.getForwarderAddress(routeSender, DEST_DOMAIN, mintRecipient), fwd, "prediction must be stable"
-        );
+        assertEq(factory.getForwarderAddress(routeSender, DEST_DOMAIN, mintRecipient), fwd, "prediction must be stable");
 
         address other = address(0xFEED);
         assertEq(

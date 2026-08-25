@@ -31,6 +31,27 @@ contract UpgradeTransitExecutorScript is BaseScript {
         require(TransitExecutor(executorProxy).owner() == ownerBefore, "owner must persist across upgrade");
         _assertIsProxy(executorProxy, "TRANSIT_EXECUTOR_PROXY");
 
+        // ⚠️ The forwarder half of the pair cannot be checked as a hard precondition here: this script runs FIRST,
+        //    so at this point the forwarder is legitimately still on the old version. Report it loudly instead —
+        //    between the two steps the transit path is DOWN, and a run left half-finished is the failure mode.
+        //    (UpgradeTransitForwarder does enforce the pair, because by then both versions are knowable.)
+        uint256 execVersion = TransitExecutor(executorProxy).version();
+        address factoryProxy = vm.envOr("TRANSIT_FORWARDER_FACTORY_PROXY", address(0));
+        if (factoryProxy != address(0)) {
+            uint256 fwdVersion = TransitForwarder(payable(_liveForwarderImpl(factoryProxy))).version();
+            if (fwdVersion != execVersion) {
+                console2.log("!! ACTION REQUIRED - the pair is now MISMATCHED and transit is DOWN.");
+                console2.log("   executor version :", execVersion);
+                console2.log("   forwarder version:", fwdVersion);
+                console2.log("   run UpgradeTransitForwarder next to complete the migration.");
+            } else {
+                console2.log("executor/forwarder versions match:", execVersion);
+            }
+        } else {
+            console2.log("!! set TRANSIT_FORWARDER_FACTORY_PROXY to have this script verify the pair.");
+            console2.log("   The forwarder must end on the same version() as this executor:", execVersion);
+        }
+
         console2.log("Previous TransitExecutor impl:", liveImpl);
         console2.log("New TransitExecutor impl:", address(newImpl));
         console2.log("Executor proxy (unchanged, as required):", executorProxy);

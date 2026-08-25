@@ -12,7 +12,7 @@ import {TransitForwarderFactory} from "../src/TransitForwarderFactory.sol";
 import {ITransitForwarder} from "../src/interfaces/ITransitForwarder.sol";
 import {ITransitExecutor} from "../src/interfaces/ITransitExecutor.sol";
 import {Ownable} from "openzeppelin-contracts/access/Ownable.sol";
-import {ICCTPV2Relayer} from "../src/interfaces/ICCTPV2Relayer.sol";
+import {ITokenMessenger} from "../src/interfaces/ITokenMessenger.sol";
 import {IReceiver} from "../src/interfaces/IReceiver.sol";
 
 /**
@@ -52,9 +52,11 @@ contract MockTransmitter is IReceiver {
     }
 }
 
-contract MockCCTPV2Relayer is ICCTPV2Relayer {
+/// @dev Circle TokenMessengerV2 stand-in for the integration suite: pulls the full amount (v2 withholds no fee)
+///      and can be forced to revert so the "burn failure rolls back the mint" property stays testable.
+contract MockTokenMessenger is ITokenMessenger {
     IERC20 public immutable usdc;
-    uint256 public lastTransferAmount;
+    uint256 public lastAmount;
     uint32 public lastDomain;
     bytes32 public lastMintRecipient;
     uint256 public callCount;
@@ -68,41 +70,28 @@ contract MockCCTPV2Relayer is ICCTPV2Relayer {
         forceRevert = v;
     }
 
-    function requestCCTPTransfer(
-        uint256 transferAmount,
+    function depositForBurn(
+        uint256 amount,
         uint32 destinationDomain,
         bytes32 mintRecipient,
         address,
-        uint256 feeAmount,
+        bytes32,
         uint256,
-        uint32,
-        bytes calldata
+        uint32
     ) external {
-        if (forceRevert) revert("relayer rejected");
-        require(usdc.transferFrom(msg.sender, address(this), transferAmount + feeAmount), "transferFrom failed");
-        lastTransferAmount = transferAmount;
+        if (forceRevert) revert("messenger rejected");
+        require(usdc.transferFrom(msg.sender, address(this), amount), "transferFrom failed");
+        lastAmount = amount;
         lastDomain = destinationDomain;
         lastMintRecipient = mintRecipient;
         callCount++;
     }
 
-    function requestCCTPTransferWithCaller(
-        uint256 transferAmount,
-        uint32 destinationDomain,
-        bytes32 mintRecipient,
-        address,
-        uint256 feeAmount,
-        uint256,
-        uint32,
-        bytes32,
-        bytes calldata
-    ) external {
-        if (forceRevert) revert("relayer rejected");
-        require(usdc.transferFrom(msg.sender, address(this), transferAmount + feeAmount), "transferFrom failed");
-        lastTransferAmount = transferAmount;
-        lastDomain = destinationDomain;
-        lastMintRecipient = mintRecipient;
-        callCount++;
+    function depositForBurnWithHook(uint256, uint32, bytes32, address, bytes32, uint256, uint32, bytes calldata)
+        external
+        pure
+    {
+        revert("hook variant must never be used");
     }
 }
 
@@ -111,7 +100,7 @@ contract MockCCTPV2Relayer is ICCTPV2Relayer {
 contract TransitIntegrationTest is Test {
     MockUSDC usdc;
     MockTransmitter transmitter;
-    MockCCTPV2Relayer relayer;
+    MockTokenMessenger messengerMock;
     TransitExecutor executor;
     TransitForwarderFactory factory;
     TransitForwarder fwd;
@@ -126,7 +115,6 @@ contract TransitIntegrationTest is Test {
     bytes32 nextHop = bytes32(uint256(uint160(address(0xD00D))));
 
     uint256 constant AMOUNT = 1_000_000;
-    uint256 constant FEE = 10_000;
     uint256 constant MAX_FEE = 500;
     uint32 constant FINALITY = 2000;
     /// @dev Non-zero on every path: the executor rejects an unset destinationCaller.
@@ -135,16 +123,18 @@ contract TransitIntegrationTest is Test {
     function setUp() public {
         usdc = new MockUSDC();
         transmitter = new MockTransmitter(usdc);
-        relayer = new MockCCTPV2Relayer(usdc);
+        messengerMock = new MockTokenMessenger(usdc);
 
         // Production deployment order: executor proxy first, then the forwarder impl bound to it, then the factory.
         TransitExecutor executorImpl = new TransitExecutor(address(usdc), address(transmitter), operator);
         executor = TransitExecutor(
-            address(new ERC1967Proxy(address(executorImpl), abi.encodeCall(TransitExecutor.initialize, (owner, address(0)))))
+            address(
+                new ERC1967Proxy(address(executorImpl), abi.encodeCall(TransitExecutor.initialize, (owner, address(0))))
+            )
         );
 
         TransitForwarder fwdImpl = new TransitForwarder(
-            address(usdc), address(relayer), operator, address(executor), LOCAL_DOMAIN, DEST_DOMAIN
+            address(usdc), address(messengerMock), operator, address(executor), LOCAL_DOMAIN, DEST_DOMAIN
         );
         TransitForwarderFactory factoryImpl = new TransitForwarderFactory();
         factory = TransitForwarderFactory(
@@ -158,15 +148,20 @@ contract TransitIntegrationTest is Test {
         fwd = TransitForwarder(payable(factory.createForwarder(routeSender, DEST_DOMAIN, nextHop)));
     }
 
-    /// @dev CCTP **v1** message layout (248 bytes, fixed) — the mint leg. The burn leg is v2, built by the relayer.
+    /// @dev CCTP **v1** message layout (248 bytes, fixed) — the mint leg. The burn leg is v2, built by the messengerMock.
     function _message(uint32 destinationDomain, bytes32 nonce, address mintRecipient, uint256 amount)
         internal
         view
         returns (bytes memory)
     {
         bytes memory header = abi.encodePacked(
-            uint32(0), uint32(1), destinationDomain, uint64(uint256(nonce)),
-            bytes32(uint256(0xCC72)), bytes32(0), bytes32(0)
+            uint32(0),
+            uint32(1),
+            destinationDomain,
+            uint64(uint256(nonce)),
+            bytes32(uint256(0xCC72)),
+            bytes32(0),
+            bytes32(0)
         );
         bytes memory body = abi.encodePacked(
             uint32(0),
@@ -186,16 +181,17 @@ contract TransitIntegrationTest is Test {
 
     function test_I01_EndToEndTransit() public {
         vm.prank(operator);
-        executor.executeTransit(_good(bytes32(uint256(1))), "att", routeSender, DEST_DOMAIN, nextHop, FEE, MAX_FEE, FINALITY, DEST_CALLER);
+        executor.executeTransit(
+            _good(bytes32(uint256(1))), "att", routeSender, DEST_DOMAIN, nextHop, MAX_FEE, FINALITY, DEST_CALLER
+        );
 
-        assertEq(relayer.lastTransferAmount(), AMOUNT - FEE, "relayer receives minted minus fee");
-        assertEq(relayer.lastDomain(), DEST_DOMAIN, "destination comes from the forwarder's storage");
-        assertEq(relayer.lastMintRecipient(), nextHop, "next hop comes from the forwarder's storage");
+        assertEq(messengerMock.lastAmount(), AMOUNT, "the messenger receives the whole minted amount - no fee");
+        assertEq(messengerMock.lastDomain(), DEST_DOMAIN, "destination comes from the forwarder's storage");
+        assertEq(messengerMock.lastMintRecipient(), nextHop, "next hop comes from the forwarder's storage");
         assertEq(usdc.balanceOf(address(fwd)), 0, "nothing is left parked on this chain");
         assertEq(usdc.balanceOf(address(executor)), 0, "the executor never holds funds");
-        assertEq(usdc.allowance(address(fwd), address(relayer)), 0, "no residual allowance");
+        assertEq(usdc.allowance(address(fwd), address(messengerMock)), 0, "no residual allowance");
     }
-
 
     // ── I-02 end-to-end refund ──
 
@@ -205,7 +201,7 @@ contract TransitIntegrationTest is Test {
 
         assertEq(usdc.balanceOf(routeSender), AMOUNT, "refund goes to the route sender");
         assertEq(usdc.balanceOf(address(fwd)), 0);
-        assertEq(relayer.callCount(), 0, "no burn on the refund path");
+        assertEq(messengerMock.callCount(), 0, "no burn on the refund path");
     }
 
     // ── I-03 the seam itself ──
@@ -219,8 +215,10 @@ contract TransitIntegrationTest is Test {
 
         // Reached through the executor's own derivation path: a transit only succeeds if it resolved to this address.
         vm.prank(operator);
-        executor.executeTransit(_good(bytes32(uint256(3))), "att", routeSender, DEST_DOMAIN, nextHop, FEE, MAX_FEE, FINALITY, DEST_CALLER);
-        assertEq(relayer.callCount(), 1, "the executor resolved to the factory-predicted forwarder");
+        executor.executeTransit(
+            _good(bytes32(uint256(3))), "att", routeSender, DEST_DOMAIN, nextHop, MAX_FEE, FINALITY, DEST_CALLER
+        );
+        assertEq(messengerMock.callCount(), 1, "the executor resolved to the factory-predicted forwarder");
     }
 
     // ── I-04 a message for another route ──
@@ -233,13 +231,35 @@ contract TransitIntegrationTest is Test {
         // Message mints to `other`, but names this chain's domain correctly. `other` accepts it — it IS its own
         // recipient — proving routes stay independent rather than leaking into each other.
         vm.prank(operator);
-        executor.executeTransit(_message(LOCAL_DOMAIN, bytes32(uint256(4)), other, AMOUNT), "att", routeSender, DEST_DOMAIN, nextHop, FEE, MAX_FEE, FINALITY, DEST_CALLER);
-        assertEq(relayer.lastMintRecipient(), bytes32(uint256(uint160(address(0xFACE)))), "funds followed the OTHER route");
+        executor.executeTransit(
+            _message(LOCAL_DOMAIN, bytes32(uint256(4)), other, AMOUNT),
+            "att",
+            routeSender,
+            DEST_DOMAIN,
+            nextHop,
+            MAX_FEE,
+            FINALITY,
+            DEST_CALLER
+        );
+        assertEq(
+            messengerMock.lastMintRecipient(),
+            bytes32(uint256(uint160(address(0xFACE)))),
+            "funds followed the OTHER route"
+        );
 
         // And a message whose destination domain is wrong is refused by the forwarder, through the executor.
         vm.prank(operator);
         vm.expectRevert(ITransitForwarder.WrongDestination.selector);
-        executor.executeTransit(_message(LOCAL_DOMAIN + 1, bytes32(uint256(5)), address(fwd), AMOUNT), "att", routeSender, DEST_DOMAIN, nextHop, FEE, MAX_FEE, FINALITY, DEST_CALLER);
+        executor.executeTransit(
+            _message(LOCAL_DOMAIN + 1, bytes32(uint256(5)), address(fwd), AMOUNT),
+            "att",
+            routeSender,
+            DEST_DOMAIN,
+            nextHop,
+            MAX_FEE,
+            FINALITY,
+            DEST_CALLER
+        );
     }
 
     // ── I-05 exactly one authoritative event ──
@@ -249,12 +269,14 @@ contract TransitIntegrationTest is Test {
     function test_I05_ExecutorEmitsNothingOnTheTransitPath() public {
         vm.recordLogs();
         vm.prank(operator);
-        executor.executeTransit(_good(bytes32(uint256(6))), "att", routeSender, DEST_DOMAIN, nextHop, FEE, MAX_FEE, FINALITY, DEST_CALLER);
+        executor.executeTransit(
+            _good(bytes32(uint256(6))), "att", routeSender, DEST_DOMAIN, nextHop, MAX_FEE, FINALITY, DEST_CALLER
+        );
 
         Vm.Log[] memory logs = vm.getRecordedLogs();
         uint256 fromExecutor;
         uint256 transitCompleted;
-        bytes32 topic0 = keccak256("TransitCompleted(bytes32,uint256,uint256,uint256,uint256,uint32,bytes32)");
+        bytes32 topic0 = keccak256("TransitCompleted(bytes32,uint256,uint256,uint32,bytes32)");
         for (uint256 i = 0; i < logs.length; i++) {
             if (logs[i].emitter == address(executor)) fromExecutor++;
             if (logs[i].topics[0] == topic0) transitCompleted++;
@@ -265,23 +287,23 @@ contract TransitIntegrationTest is Test {
 
     // ── I-06 atomicity across the seam ──
 
-    /// @dev A failure at the far end (the relayer) unwinds the mint too, so there is no half-finished transit to
+    /// @dev A failure at the far end (Circle's messenger) unwinds the mint too, so there is no half-finished transit to
     ///      reconcile and the operator can retry the same message unchanged.
     function test_I06_FarEndFailureRollsBackTheMint() public {
         bytes32 n = bytes32(uint256(7));
-        relayer.setForceRevert(true);
+        messengerMock.setForceRevert(true);
 
         vm.prank(operator);
-        vm.expectRevert(bytes("relayer rejected"));
-        executor.executeTransit(_good(n), "att", routeSender, DEST_DOMAIN, nextHop, FEE, MAX_FEE, FINALITY, DEST_CALLER);
+        vm.expectRevert(bytes("messenger rejected"));
+        executor.executeTransit(_good(n), "att", routeSender, DEST_DOMAIN, nextHop, MAX_FEE, FINALITY, DEST_CALLER);
 
         assertFalse(transmitter.usedNonce(n), "nonce unspent");
         assertEq(usdc.balanceOf(address(fwd)), 0, "no funds stranded");
 
-        relayer.setForceRevert(false);
+        messengerMock.setForceRevert(false);
         vm.prank(operator);
-        executor.executeTransit(_good(n), "att", routeSender, DEST_DOMAIN, nextHop, FEE, MAX_FEE, FINALITY, DEST_CALLER);
-        assertEq(relayer.lastTransferAmount(), AMOUNT - FEE, "the same message succeeds on retry");
+        executor.executeTransit(_good(n), "att", routeSender, DEST_DOMAIN, nextHop, MAX_FEE, FINALITY, DEST_CALLER);
+        assertEq(messengerMock.lastAmount(), AMOUNT, "the same message succeeds on retry");
     }
 
     // ── I-07 create-on-demand: the seam that removes the off-chain createForwarder step ──
@@ -300,8 +322,9 @@ contract TransitIntegrationTest is Test {
         executor.executeTransit(
             _message(LOCAL_DOMAIN, bytes32(uint256(70)), predicted, AMOUNT),
             "att",
-            routeSender, DEST_DOMAIN, newHop,
-            FEE,
+            routeSender,
+            DEST_DOMAIN,
+            newHop,
             MAX_FEE,
             FINALITY,
             DEST_CALLER
@@ -309,7 +332,7 @@ contract TransitIntegrationTest is Test {
 
         assertGt(predicted.code.length, 0, "created in the same transaction as the mint");
         assertTrue(factory.isForwarderDeployed(routeSender, DEST_DOMAIN, newHop));
-        assertEq(relayer.lastMintRecipient(), newHop, "and the transit completed through it");
+        assertEq(messengerMock.lastMintRecipient(), newHop, "and the transit completed through it");
         assertEq(usdc.balanceOf(predicted), 0, "nothing parked on the brand-new forwarder");
     }
 
@@ -328,8 +351,9 @@ contract TransitIntegrationTest is Test {
             _message(LOCAL_DOMAIN, bytes32(uint256(71)), predicted, AMOUNT),
             "att",
             // same shape, different next hop — so it predicts a DIFFERENT address
-            routeSender, DEST_DOMAIN, bytes32(uint256(uint160(address(0xBADBAD)))),
-            FEE,
+            routeSender,
+            DEST_DOMAIN,
+            bytes32(uint256(uint160(address(0xBADBAD)))),
             MAX_FEE,
             FINALITY,
             DEST_CALLER
@@ -341,8 +365,10 @@ contract TransitIntegrationTest is Test {
     function test_I07c_UnsetFactoryOnlyBlocksNewRoutes() public {
         // No setFactory call at all. An EXISTING route keeps working...
         vm.prank(operator);
-        executor.executeTransit(_good(bytes32(uint256(72))), "att", routeSender, DEST_DOMAIN, nextHop, FEE, MAX_FEE, FINALITY, DEST_CALLER);
-        assertEq(relayer.callCount(), 1);
+        executor.executeTransit(
+            _good(bytes32(uint256(72))), "att", routeSender, DEST_DOMAIN, nextHop, MAX_FEE, FINALITY, DEST_CALLER
+        );
+        assertEq(messengerMock.callCount(), 1);
 
         // ...while a new one fails loudly rather than silently misdelivering.
         bytes32 newHop = bytes32(uint256(uint160(address(0xFEED))));
@@ -352,14 +378,14 @@ contract TransitIntegrationTest is Test {
         executor.executeTransit(
             _message(LOCAL_DOMAIN, bytes32(uint256(73)), predicted, AMOUNT),
             "att",
-            routeSender, DEST_DOMAIN, newHop,
-            FEE,
+            routeSender,
+            DEST_DOMAIN,
+            newHop,
             MAX_FEE,
             FINALITY,
             DEST_CALLER
         );
     }
-
 
     /// @dev Refund must be able to create too: otherwise the mint would land on a codeless address with no way to
     ///      push or pull it back.

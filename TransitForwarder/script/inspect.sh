@@ -3,14 +3,20 @@
 # Read a deployed TransitExecutor, or a TransitForwarderFactory and the chain it installs.
 #
 #   ./script/inspect.sh 0xEXECUTOR --chain avalanche              # executor only
-#   ./script/inspect.sh 0xFACTORY  --chain avalanche-testnet      # factory -> beacon -> forwarder impl
-#   ./script/inspect.sh 0xFACTORY  --chain avalanche --json
+#   ./script/inspect.sh 0xFACTORY  --chain polygon-testnet        # factory -> beacon -> forwarder impl
+#   ./script/inspect.sh 0xFACTORY  --chain polygon --json
 #
 # Read-only: no key, no broadcast, nothing signed. Runnable from anywhere; it cds to the foundry root itself.
 #
-# ⚠️ AVALANCHE ONLY. Unlike the ForwarderFactory sibling this subproject deploys to Avalanche C-Chain, and
-#    BaseScript.sol reverts "Chain not supported." on anything else — so a Transit deployment cannot legitimately
-#    exist elsewhere. Avalanche is where it LIVES (LOCAL_DOMAIN = 1); Injective is where it SENDS (domain 29).
+# ⚠️ SOURCE CHAINS ONLY — Avalanche C-Chain and Polygon PoS. Unlike the ForwarderFactory sibling this subproject
+#    deploys to those, and BaseScript.sol reverts "Chain not supported." on anything else, so a Transit deployment
+#    cannot legitimately exist elsewhere. They are where it LIVES (LOCAL_DOMAIN = 1 / 7); Injective is where it
+#    SENDS (domain 29).
+#
+# ⚠️ --chain is not a label, it is the Config row this report compares against, and each chain is an INDEPENDENT
+#    deployment. Naming the wrong one would grade a live deployment against another chain's addresses — which the
+#    messenger's cross-tier address collision would hide (MESSENGER_*_TIER is one address for EVERY chain of a
+#    tier) — so the chain id is verified before any read.
 #
 # TWO MODES, chosen by what you pass — the report describes the contract you asked about, nothing more.
 #
@@ -21,7 +27,7 @@
 #
 #               factory proxy --beacon()--> UpgradeableBeacon --implementation()--> forwarder impl
 #
-#             owner/beacon/version live on the factory, while usdc, paymentContract, operator, LOCAL_DOMAIN,
+#             owner/beacon/version live on the factory, while usdc, messenger, operator, LOCAL_DOMAIN,
 #             ALLOWED_DESTINATION_DOMAIN and executor are IMMUTABLES of the impl — baked into its bytecode and
 #             shared by every forwarder the beacon serves.
 #
@@ -37,10 +43,14 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 # ── chain table ─────────────────────────────────────────────────────────────
-# <name> <rpc> <expected chain id> <config suffix>. Only the two Avalanche C-Chain networks — see the header.
+# <name> <rpc> <expected chain id> <config suffix>. Only the supported source networks — see the header.
+# The config suffix is what pairs a row with Config.sol's constants: <NAME>_$SUFFIX for addresses, and
+# ${SUFFIX%_TESTNET}_CCTP_DOMAIN for the chain's own domain (domains identify the chain, so both networks share one).
 CHAINS=(
   "avalanche-testnet  https://api.avax-test.network/ext/bc/C/rpc           43113  AVALANCHE_TESTNET"
   "avalanche          https://api.avax.network/ext/bc/C/rpc                43114  AVALANCHE"
+  "polygon-testnet    https://polygon-amoy-bor-rpc.publicnode.com          80002  POLYGON_TESTNET"
+  "polygon            https://polygon-bor-rpc.publicnode.com               137    POLYGON"
 )
 
 IMPL_SLOT=0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc
@@ -116,14 +126,32 @@ impl_of() {
 config_addr() {
   grep -oE "^address constant $1_$SUFFIX = 0x[0-9a-fA-F]{40}" script/Config.sol | grep -oE '0x[0-9a-fA-F]{40}' || true
 }
-# Domains identify the CHAIN, not the network, so mainnet and testnet share them (no suffix).
+# Domains identify the CHAIN, not the network, so mainnet and testnet share them: strip _TESTNET off the suffix.
+# Config declares one <CHAIN>_CCTP_DOMAIN per supported chain; picking the wrong one would report the wrong
+# LOCAL_DOMAIN as "ok", which is the value that decides whether legitimate messages are accepted at all.
+LOCAL_DOMAIN_CONST="${SUFFIX%_TESTNET}_CCTP_DOMAIN"
+# The burn-leg messenger is ONE address per network tier (identical on every chain of that tier), so unlike every
+# other address here it is not keyed by chain — only by whether this row is a testnet.
+case "$SUFFIX" in
+  *_TESTNET) MESSENGER_CONST="MESSENGER_TESTNET_TIER" ;;
+  *)         MESSENGER_CONST="MESSENGER_MAINNET_TIER" ;;
+esac
+config_messenger() {
+  grep -oE "^address constant $MESSENGER_CONST = 0x[0-9a-fA-F]{40}" script/Config.sol | grep -oE '0x[0-9a-fA-F]{40}' || true
+}
 config_u32() {
   grep -oE "^uint32 constant $1 = [0-9]+" script/Config.sol | grep -oE '[0-9]+$' || true
 }
 
+# ⚠️ An UNREADABLE field is a failure, not a blank. `probe` collapses every failure — a revert, a missing getter,
+#    a rate-limited or flaky RPC — into the string "n/a". Treating that as "(no Config value)" would let this
+#    script exit 0 having never checked the field, which is the opposite of what a pre-upgrade gate is for: one
+#    throttled `cast call` against a public RPC and LOCAL_DOMAIN (the value deciding whether legitimate messages
+#    are accepted at all) silently goes ungraded. Only a genuinely absent CONFIG side is a blank.
 verdict() {
   local got="$1" want="$2"
-  if [[ -z "$want" || "$got" == "n/a" ]]; then printf '(no Config value)'
+  if [[ -z "$want" ]]; then printf '(no Config value)'
+  elif [[ "$got" == "n/a" ]]; then printf 'UNREADABLE (could not read on-chain; expected %s)' "$want"
   elif [[ "$(lower "$got")" == "$(lower "$want")" ]]; then printf 'ok'
   else printf 'DRIFT (Config says %s)' "$want"
   fi
@@ -280,8 +308,9 @@ else
 
   icall() { probe "$IMPL" "$1"; }
 
-  # Kind check. usdc()/paymentContract() also exist on the OutboundForwarder next door, so only these two
-  # separate a Transit impl from it — and reading the fields below off the wrong contract is the failure mode.
+  # Kind check. usdc() also exists on the OutboundForwarder next door, so only these two separate a Transit impl
+  # from it — and reading the fields below off the wrong contract is the failure mode. (Since forwarder v2 the
+  # Transit impl no longer answers paymentContract() at all, which is what the sibling probes for Outbound.)
   FWD_EXECUTOR="$(icall 'executor()(address)')"
   ALLOWED_DOMAIN="$(icall 'ALLOWED_DESTINATION_DOMAIN()(uint32)')"
   if [[ "$FWD_EXECUTOR" == "n/a" || "$ALLOWED_DOMAIN" == "n/a" ]]; then
@@ -292,14 +321,21 @@ else
 
   FWD_VERSION="$(icall 'version()(uint256)')"
   USDC="$(icall 'usdc()(address)')"
-  PAYMENT="$(icall 'paymentContract()(address)')"
+  MESSENGER="$(icall 'messenger()(address)')"
   OPERATOR="$(icall 'operator()(address)')"
   LOCAL_DOMAIN="$(icall 'LOCAL_DOMAIN()(uint32)')"
 
   V_USDC="$(verdict "$USDC" "$(config_addr USDC)")"
-  V_PAYMENT="$(verdict "$PAYMENT" "$(config_addr PAYMENT_CONTRACT)")"
+  # ⚠️ An absent getter must NOT fall through to verdict(): it maps "n/a" to "(no Config value)", which is not
+  #    counted as a failure, so a pre-v2 impl would be reported CLEAN with its burn leg never checked — during a
+  #    v1 -> v2 migration, exactly when someone runs this to confirm what is live. Name it instead.
+  if [[ "$MESSENGER" == "n/a" ]]; then
+    V_MESSENGER="ABSENT - impl predates forwarder v2 (still delegates to a PaymentContract); check version()"
+  else
+    V_MESSENGER="$(verdict "$MESSENGER" "$(config_messenger)")"
+  fi
   V_OPERATOR="$(verdict "$OPERATOR" "$(config_addr OPERATOR)")"
-  V_LOCAL_DOMAIN="$(verdict "$LOCAL_DOMAIN" "$(config_u32 AVALANCHE_CCTP_DOMAIN)")"
+  V_LOCAL_DOMAIN="$(verdict "$LOCAL_DOMAIN" "$(config_u32 "$LOCAL_DOMAIN_CONST")")"
   V_ALLOWED_DOMAIN="$(verdict "$ALLOWED_DOMAIN" "$(config_u32 INJECTIVE_CCTP_DOMAIN)")"
 
   # The on-chain invariant upgradeForwarderImplementation enforces. If these ever diverged, the factory could no
@@ -307,12 +343,10 @@ else
   if [[ "$(lower "$F_EXECUTOR")" == "$(lower "$FWD_EXECUTOR")" ]]; then X_FROZEN_V="ok (== impl's executor)"
   else X_FROZEN_V="MISMATCH (upgradeForwarderImplementation would revert ExecutorMismatch)"; fi
 
-  # The forwarder constructor enforces usdc == paymentContract.usdc() at deploy time (UsdcMismatch). Re-checked
-  # live because the PaymentContract is upgradeable and could have moved underneath a long-deployed impl.
-  PC_USDC="$(probe "$PAYMENT" 'usdc()(address)')"
-  if [[ "$PC_USDC" == "n/a" ]]; then V_PC_USDC="(paymentContract did not answer usdc())"
-  elif [[ "$(lower "$PC_USDC")" == "$(lower "$USDC")" ]]; then V_PC_USDC="ok (== forwarder usdc)"
-  else V_PC_USDC="MISMATCH - the burn leg would pull a different token ($PC_USDC)"; fi
+  # ⚠️ GONE IN v2, deliberately: v1 cross-checked the forwarder's usdc against paymentContract.usdc(), both at
+  #    deploy time (UsdcMismatch) and live here. Circle's TokenMessenger takes burnToken per call and exposes no
+  #    usdc(), so there is nothing to compare against. What replaces it: `usdc` above is graded against Config, and
+  #    the impl only ever passes that immutable as burnToken (pinned by TransitForwarder.t.sol T-33).
 
   # The constructor's SelfLoop guard, restated: a route to this very chain could never produce a usable transfer.
   if [[ "$LOCAL_DOMAIN" != "n/a" && "$LOCAL_DOMAIN" == "$ALLOWED_DOMAIN" ]]; then
@@ -334,7 +368,7 @@ else
     fi
   fi
 
-  VERDICTS="$V_USDC$V_PAYMENT$V_OPERATOR$V_LOCAL_DOMAIN$V_ALLOWED_DOMAIN$B_OWNER_V$X_FROZEN_V$V_PC_USDC$V_SELFLOOP"
+  VERDICTS="$V_USDC$V_MESSENGER$V_OPERATOR$V_LOCAL_DOMAIN$V_ALLOWED_DOMAIN$B_OWNER_V$X_FROZEN_V$V_SELFLOOP"
 
   if [[ $JSON -eq 1 ]]; then
     cat <<EOF
@@ -362,7 +396,7 @@ else
     "address": "$IMPL",
     "version": "$FWD_VERSION",
     "usdc": "$USDC",
-    "paymentContract": "$PAYMENT",
+    "messenger": "$MESSENGER",
     "operator": "$OPERATOR",
     "executor": "$FWD_EXECUTOR",
     "localDomain": "$LOCAL_DOMAIN",
@@ -370,14 +404,13 @@ else
   },
   "configMatch": {
     "usdc": "$V_USDC",
-    "paymentContract": "$V_PAYMENT",
+    "messenger": "$V_MESSENGER",
     "operator": "$V_OPERATOR",
     "localDomain": "$V_LOCAL_DOMAIN",
     "allowedDestinationDomain": "$V_ALLOWED_DOMAIN"
   },
   "checks": {
     "frozenExecutor": "$X_FROZEN_V",
-    "paymentContractUsdc": "$V_PC_USDC",
     "selfLoop": "$V_SELFLOOP"
   },
   "beaconInitCodeHashVsLocalBuild": "$BUILD_CHECK"
@@ -404,13 +437,12 @@ EOF
     echo " forwarder impl   (forwarder version = $FWD_VERSION)"
     echo "   -- immutables baked into the impl, shared by every deployed forwarder --"
     printf "   usdc           = %-42s %s\n" "$USDC" "$V_USDC"
-    printf "   paymentContract= %-42s %s\n" "$PAYMENT" "$V_PAYMENT"
+    printf "   messenger      = %-42s %s\n" "$MESSENGER" "$V_MESSENGER"
     printf "   operator       = %-42s %s\n" "$OPERATOR" "$V_OPERATOR"
     printf "   executor       = %s\n" "$FWD_EXECUTOR"
     printf "   LOCAL_DOMAIN               = %-29s %s\n" "$LOCAL_DOMAIN" "$V_LOCAL_DOMAIN"
     printf "   ALLOWED_DESTINATION_DOMAIN = %-29s %s\n" "$ALLOWED_DOMAIN" "$V_ALLOWED_DOMAIN"
     echo "----------------------------------------------------------"
-    printf "   paymentContract.usdc() == forwarder usdc : %s\n" "$V_PC_USDC"
     printf "   LOCAL_DOMAIN != ALLOWED_DESTINATION      : %s\n" "$V_SELFLOOP"
     echo "----------------------------------------------------------"
     echo " upgrade safety"
@@ -427,7 +459,7 @@ EOF
 fi
 
 case "$VERDICTS" in
-  *DRIFT*|*MISMATCH*|*"NOT A PROXY"*)
+  *DRIFT*|*MISMATCH*|*ABSENT*|*UNREADABLE*|*"NOT A PROXY"*)
     echo >&2
     echo "error: the live wiring does not match Config.sol for $CHAIN - see the marked lines above." >&2
     exit 1 ;;

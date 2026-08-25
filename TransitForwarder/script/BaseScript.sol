@@ -11,38 +11,68 @@ import {TransitForwarder} from "../src/TransitForwarder.sol";
 import {TransitExecutor} from "../src/TransitExecutor.sol";
 
 /**
- * @notice Deploy guard supporting only the two Avalanche C-Chain networks (mainnet 43114 / Fuji 43113).
- *         ⚠️ Unlike its ForwarderFactory siblings this subproject targets AVALANCHE, not Injective EVM — Avalanche
- *         is where it is DEPLOYED (LOCAL_DOMAIN = 1); Injective is where it SENDS (INJECTIVE_CCTP_DOMAIN = 29).
+ * @notice Deploy guard supporting the four supported SOURCE networks: Avalanche C-Chain (43114 / Fuji 43113) and
+ *         Polygon PoS (137 / Amoy 80002).
+ *         ⚠️ Unlike its ForwarderFactory siblings this subproject targets those chains, not Injective EVM — they are
+ *         where it is DEPLOYED (LOCAL_DOMAIN = 1 or 7); Injective is where it SENDS (INJECTIVE_CCTP_DOMAIN = 29).
+ *
+ *         ⚠️ Each chain is a SEPARATE deployment with its own executor proxy, factory and forwarders. This contract
+ *         resolves exactly one row from `block.chainid`, so the chain the RPC actually serves — not an env var, not
+ *         a flag — decides which addresses get baked into an implementation. Note the messenger address is IDENTICAL
+ *         on every chain of a network tier, so a wrong-RPC run cannot be caught by eyeballing it — LOCAL_DOMAIN is
+ *         the immutable that actually differs.
  * @dev ⚠️ REDUCED COPY of ForwarderFactory/script/BaseScript.sol.
  *
  *      The original probes a kind-specific getter to tell Inbound from Outbound impls. There is only one kind of
  *      forwarder here, so LOCAL_DOMAIN() below is a plain sanity check, not a discriminator. `transmitter()` IS a
  *      real discriminator for an executor impl, since the forwarder gave it up with the mint capability.
  *
- *      (Residual risk in the OTHER project: its inbound upgrade script still accepts a Transit factory via the
- *      `paymentContract()` probe. One-line fix there, deliberately out of scope here.)
+ *      (That residual risk in the OTHER project is now GONE: its outbound upgrade guard discriminates on a
+ *      `paymentContract()` probe, and a v2 Transit impl no longer answers it.)
  */
 abstract contract BaseScript is Script {
     address public immutable usdc;
     address public immutable transmitter; // CCTP v1 MessageTransmitter (mint leg, called by the executor)
-    address public immutable paymentContract; // CCTPV2Relayer (burn leg, delegated)
+    address public immutable messenger; // Circle TokenMessengerV2 (burn leg, called directly — no relayer, no fee)
     address public immutable operator;
+    /// @notice The deploying chain's own CCTP domain — injected as TransitForwarder.LOCAL_DOMAIN.
+    /// @dev Resolved here rather than read from Config at the use site: with more than one supported chain, a
+    ///      chain-specific constant used directly is a silent single-chain hard-code. See the SelfLoop note below.
+    uint32 public immutable localDomain;
 
     constructor() {
         if (block.chainid == CHAIN_AVALANCHE) {
             usdc = USDC_AVALANCHE;
             transmitter = TRANSMITTER_AVALANCHE;
-            paymentContract = PAYMENT_CONTRACT_AVALANCHE;
+            messenger = MESSENGER_MAINNET_TIER;
             operator = OPERATOR_AVALANCHE;
+            localDomain = AVALANCHE_CCTP_DOMAIN;
         } else if (block.chainid == CHAIN_AVALANCHE_TESTNET) {
             usdc = USDC_AVALANCHE_TESTNET;
             transmitter = TRANSMITTER_AVALANCHE_TESTNET;
-            paymentContract = PAYMENT_CONTRACT_AVALANCHE_TESTNET;
+            messenger = MESSENGER_TESTNET_TIER;
             operator = OPERATOR_AVALANCHE_TESTNET;
+            localDomain = AVALANCHE_CCTP_DOMAIN;
+        } else if (block.chainid == CHAIN_POLYGON) {
+            usdc = USDC_POLYGON;
+            transmitter = TRANSMITTER_POLYGON;
+            messenger = MESSENGER_MAINNET_TIER;
+            operator = OPERATOR_POLYGON;
+            localDomain = POLYGON_CCTP_DOMAIN;
+        } else if (block.chainid == CHAIN_POLYGON_TESTNET) {
+            usdc = USDC_POLYGON_TESTNET;
+            transmitter = TRANSMITTER_POLYGON_TESTNET;
+            messenger = MESSENGER_TESTNET_TIER;
+            operator = OPERATOR_POLYGON_TESTNET;
+            localDomain = POLYGON_CCTP_DOMAIN;
         } else {
             revert("Chain not supported.");
         }
+
+        // Cheap, but it is the one thing no per-chain row can get wrong on its own: a source chain that IS the
+        // destination could never produce a usable transfer, and TransitForwarder's constructor would revert
+        // SelfLoop at deploy time anyway. Failing in the constructor names the cause instead.
+        require(localDomain != INJECTIVE_CCTP_DOMAIN, "localDomain == INJECTIVE_CCTP_DOMAIN (SelfLoop)");
     }
 
     /// @dev The TransitExecutor PROXY. Not a Config constant: the address is only known after deployment, and
@@ -62,9 +92,7 @@ abstract contract BaseScript is Script {
     /// @dev Overload for callers that already validated the proxy BEFORE startBroadcast. Re-running the guard
     ///      inside a broadcast would contradict the rule stated on _assertTransitImmutablesMatch below.
     function _deployTransitForwarderImpl(address exec) internal returns (TransitForwarder) {
-        return new TransitForwarder(
-            usdc, paymentContract, operator, exec, AVALANCHE_CCTP_DOMAIN, INJECTIVE_CCTP_DOMAIN
-        );
+        return new TransitForwarder(usdc, messenger, operator, exec, localDomain, INJECTIVE_CCTP_DOMAIN);
     }
 
     /// @dev Deploy a new TransitExecutor impl from Config. Call within a broadcast context.
@@ -96,6 +124,8 @@ abstract contract BaseScript is Script {
     // refuses unless the rebind was asked for. It assumes Config is exactly what the deploy helpers inject — keep
     // those in step or the guard checks something other than what will be deployed.
     uint256 private _driftCount;
+    /// @dev Counted apart from _driftCount so its authorisation cannot waive an ordinary drift. See _settleDrift.
+    uint256 private _v1ToV2Count;
 
     /// @dev factory proxy → beacon → the implementation currently installed for every deployed forwarder.
     function _liveForwarderImpl(address factoryProxy) internal view returns (address) {
@@ -127,14 +157,44 @@ abstract contract BaseScript is Script {
         return vm.envOr("ALLOW_IMMUTABLE_REBIND", false);
     }
 
+    /// @dev Authorises ONLY the v1 -> v2 shape change (see _diffMessenger). Deliberately a SEPARATE flag from
+    ///      ALLOW_IMMUTABLE_REBIND — see _settleDrift for why conflating them would be dangerous.
+    function _v1ToV2Allowed() internal view virtual returns (bool) {
+        return vm.envOr("ALLOW_V1_TO_V2", false);
+    }
+
+    /// @dev ⚠️ TWO INDEPENDENT AUTHORISATIONS, and keeping them independent is the whole point.
+    ///
+    ///      Each counter is all-or-nothing: one flag waives every drift it covers. That is acceptable for ordinary
+    ///      rebinds, which an operator inspects one at a time. It is NOT acceptable for the v1 -> v2 migration,
+    ///      because that migration MANDATES its flag on every run — so if the two shared one flag, the mandatory
+    ///      one would also disarm the `executor` check for that run.
+    ///
+    ///      That check guards the most damaging mistake available here (see _assertIsProxy): the executor comes
+    ///      from an env var with NO chain binding, and the supported chains are independent deployments. An
+    ///      operator upgrading Polygon with Avalanche's TRANSIT_EXECUTOR_PROXY still exported would be refused on
+    ///      `DRIFT executor` — and then waved straight through by the very flag the migration required, installing
+    ///      a forwarder impl bound to the other chain's executor. Runbook §3.1: unfixable.
     function _settleDrift() private {
-        if (_driftCount == 0) {
+        if (_driftCount == 0 && _v1ToV2Count == 0) {
             console2.log("immutables match Config");
             return;
         }
-        require(_rebindAllowed(), "immutable drift vs Config (set ALLOW_IMMUTABLE_REBIND=true to rebind intentionally)");
-        console2.log("!! intentional rebind, fields changed:", _driftCount);
-        _driftCount = 0;
+        if (_v1ToV2Count != 0) {
+            require(
+                _v1ToV2Allowed(),
+                "pre-v2 impl detected (set ALLOW_V1_TO_V2=true for the fee-removal upgrade - it does NOT waive other drift)"
+            );
+            console2.log("!! authorised v1 -> v2 shape change");
+            _v1ToV2Count = 0;
+        }
+        if (_driftCount != 0) {
+            require(
+                _rebindAllowed(), "immutable drift vs Config (set ALLOW_IMMUTABLE_REBIND=true to rebind intentionally)"
+            );
+            console2.log("!! intentional rebind, fields changed:", _driftCount);
+            _driftCount = 0;
+        }
     }
 
     /// @dev Call BEFORE startBroadcast: a failure here must cost nothing and leave no on-chain trace.
@@ -148,13 +208,36 @@ abstract contract BaseScript is Script {
 
         TransitForwarder live = TransitForwarder(payable(liveImpl));
         _diff("usdc", address(live.usdc()), usdc);
-        _diff("paymentContract", address(live.paymentContract()), paymentContract);
+        _diffMessenger(liveImpl);
         _diff("operator", live.operator(), operator);
         // The only field compared against an env var rather than a Config constant — see _executorProxy.
         _diff("executor", live.executor(), _executorProxy());
-        _diff("LOCAL_DOMAIN", live.LOCAL_DOMAIN(), AVALANCHE_CCTP_DOMAIN);
+        _diff("LOCAL_DOMAIN", live.LOCAL_DOMAIN(), localDomain);
         _diff("ALLOWED_DESTINATION_DOMAIN", live.ALLOWED_DESTINATION_DOMAIN(), INJECTIVE_CCTP_DOMAIN);
         _settleDrift();
+    }
+
+    /// @dev ⚠️ `messenger` DID NOT EXIST before forwarder v2 (it replaced `paymentContract` when the relayer fee was
+    ///      removed), and a pre-v2 impl does not merely return nothing for it — TransitForwarder's fallback reverts
+    ///      NativeNotAccepted, so a typed `live.messenger()` would abort this whole guard with an error naming the
+    ///      wrong problem entirely, and ALLOW_IMMUTABLE_REBIND could not get past it because the revert happens
+    ///      before _settleDrift. Since the ONE upgrade that must cross this boundary is the v1 -> v2 upgrade itself,
+    ///      that would brick the exact path it is meant to protect. So probe it defensively and report an absent
+    ///      getter as drift — which is honestly what it is: v1 -> v2 genuinely rebinds this slot.
+    ///
+    ///      It is counted under its OWN authorisation (ALLOW_V1_TO_V2), never under ALLOW_IMMUTABLE_REBIND: this
+    ///      drift is unavoidable on the migration run, and a mandatory flag must not be able to waive anything
+    ///      else. See _settleDrift.
+    function _diffMessenger(address liveImpl) private {
+        (bool ok, bytes memory data) = liveImpl.staticcall(abi.encodeWithSignature("messenger()"));
+        if (!ok || data.length != 32) {
+            _v1ToV2Count++;
+            console2.log("  V1->V2  messenger");
+            console2.log("    live: ABSENT - this impl predates forwarder v2");
+            console2.log("    cfg :", vm.toString(messenger));
+            return;
+        }
+        _diff("messenger", abi.decode(data, (address)), messenger);
     }
 
     /// @dev Call BEFORE startBroadcast, same contract as the forwarder guard above.

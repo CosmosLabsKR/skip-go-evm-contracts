@@ -27,7 +27,7 @@ import {TransitBurnParams} from "./libraries/TransitBurnParams.sol";
  *      Scripts must reference the PROXY, never the implementation (BaseScript._assertIsProxy).
  *
  *      ⚠️ Version mix, fixed by construction: mint = CCTP v1 (`transmitter` below, parsed by CCTPV1Message),
- *      burn = CCTP v2 (delegated by the forwarder to CCTPV2Relayer). Nothing sniffs the version at runtime.
+ *      burn = CCTP v2 (the forwarder calls Circle's TokenMessenger directly). Nothing sniffs the version at runtime.
  *
  *      ⚠️ SHORT-LIVED BY DESIGN — see the design document's §10 sunset procedure.
  */
@@ -92,8 +92,11 @@ contract TransitExecutor is ITransitExecutor, Initializable, UUPSUpgradeable, Ow
         }
     }
 
+    /// @dev v2: `feeAmount` was removed from executeTransit — this route takes no relayer fee. Must be upgraded
+    ///      together with the forwarder beacon: the two share TransitBurnParams and the transferMinted ABI, so a
+    ///      v1 executor cannot drive a v2 forwarder or vice versa.
     function version() external pure virtual returns (uint256) {
-        return 1;
+        return 2;
     }
 
     /// @notice Point the executor at the factory it creates missing forwarders with.
@@ -113,23 +116,21 @@ contract TransitExecutor is ITransitExecutor, Initializable, UUPSUpgradeable, Ow
         address routeSender,
         uint32 routeDestinationDomain,
         bytes32 routeMintRecipient,
-        uint256 feeAmount,
         uint256 maxFee,
         uint32 minFinalityThreshold,
         bytes32 destinationCaller
     ) external onlyOperator nonReentrant {
         if (destinationCaller == bytes32(0)) revert EmptyDestinationCaller();
-        TransitBurnParams.check(feeAmount, minFinalityThreshold);
+        TransitBurnParams.check(minFinalityThreshold);
         address forwarder = _ensureForwarder(message, routeSender, routeDestinationDomain, routeMintRecipient);
         uint256 minted = _receiveAndMeasure(message, attestation, forwarder);
 
-        ITransitForwarder(forwarder).transferMinted(
-            message, minted, feeAmount, maxFee, minFinalityThreshold, destinationCaller
-        );
+        // maxFee is bounded against `minted` by the forwarder, which is the first place the amount is known.
+        ITransitForwarder(forwarder).transferMinted(message, minted, maxFee, minFinalityThreshold, destinationCaller);
     }
 
     /// @notice Mint and have the forwarder return everything to its `sender`, skipping the onward burn.
-    /// @dev The exit when a message can be minted but not transited (e.g. the amount cannot cover a fee). Without
+    /// @dev The exit when a message can be minted but not transited (e.g. maxFee is not below the amount). Without
     ///      it such a message is unresolvable: the source chain has already burned and only a receiveMessage here
     ///      can redeem it. No _checkStaticParams and no destinationCaller — nothing is burned onward.
     function executeRefund(

@@ -62,7 +62,6 @@ contract MockTransmitter is IReceiver {
 contract MockTransitForwarder {
     bytes public lastMessage;
     uint256 public lastMinted;
-    uint256 public lastFeeAmount;
     uint256 public lastMaxFee;
     uint32 public lastMinFinality;
     bytes32 public lastDestinationCaller;
@@ -83,42 +82,37 @@ contract MockTransitForwarder {
     function transferMinted(
         bytes calldata message,
         uint256 minted,
-        uint256 feeAmount,
         uint256 maxFee,
         uint32 minFinalityThreshold,
         bytes32 destinationCaller
     ) external {
         _reenterIfAsked(message);
         if (forceRevert) revert("forwarder rejected");
-        _record(message, minted, feeAmount, maxFee, minFinalityThreshold, destinationCaller);
+        _record(message, minted, maxFee, minFinalityThreshold, destinationCaller);
     }
-
 
     function refundMinted(bytes calldata message, uint256 minted) external {
         _reenterIfAsked(message);
         if (forceRevert) revert("forwarder rejected");
         lastWasRefund = true;
-        _record(message, minted, 0, 0, 0, bytes32(0));
+        _record(message, minted, 0, 0, bytes32(0));
     }
 
     function _reenterIfAsked(bytes calldata message) private {
         if (reenterTarget == address(0)) return;
-        ITransitExecutor(reenterTarget).executeTransit(
-            message, "att", address(0xBEEF), 3, bytes32(uint256(1)), 1, 0, 2000, bytes32(uint256(0xCA11))
-        );
+        ITransitExecutor(reenterTarget)
+            .executeTransit(message, "att", address(0xBEEF), 3, bytes32(uint256(1)), 0, 2000, bytes32(uint256(0xCA11)));
     }
 
     function _record(
         bytes memory message,
         uint256 minted,
-        uint256 feeAmount,
         uint256 maxFee,
         uint32 minFinalityThreshold,
         bytes32 destinationCaller
     ) private {
         lastMessage = message;
         lastMinted = minted;
-        lastFeeAmount = feeAmount;
         lastMaxFee = maxFee;
         lastMinFinality = minFinalityThreshold;
         lastDestinationCaller = destinationCaller;
@@ -129,11 +123,12 @@ contract MockTransitForwarder {
 /// @dev Bumped `version()` used to prove a UUPS upgrade actually swapped logic. Mirrors the factory suite's
 ///      TransitForwarderFactoryV2. The constructor re-declares the immutables because they live in the impl, which
 ///      is precisely what an upgrade replaces.
-contract TransitExecutorV2 is TransitExecutor {
+contract TransitExecutorV3 is TransitExecutor {
     constructor(address u, address t, address o) TransitExecutor(u, t, o) {}
 
+    /// @dev 3, not 2: the real TransitExecutor is at 2 since the fee removal, and this must stay ahead of it.
     function version() external pure override returns (uint256) {
-        return 2;
+        return 3;
     }
 }
 
@@ -151,7 +146,6 @@ contract TransitExecutorTest is Test {
 
     uint32 constant LOCAL_DOMAIN = 9;
     uint256 constant AMOUNT = 1_000_000;
-    uint256 constant FEE = 10_000;
     uint256 constant MAX_FEE = 500;
     uint32 constant FINALITY = 2000;
 
@@ -161,15 +155,15 @@ contract TransitExecutorTest is Test {
     /// @dev The mock forwarder's next hop. Only consulted on the create-on-demand path, which this file mocks out.
     bytes32 constant NEXT_HOP = bytes32(uint256(uint160(address(0xD00D))));
 
-
     function setUp() public {
         usdc = new MockUSDC();
         transmitter = new MockTransmitter(usdc);
         forwarder = new MockTransitForwarder();
 
         TransitExecutor impl = new TransitExecutor(address(usdc), address(transmitter), operator);
-        executor =
-            TransitExecutor(address(new ERC1967Proxy(address(impl), abi.encodeCall(TransitExecutor.initialize, (owner, address(0))))));
+        executor = TransitExecutor(
+            address(new ERC1967Proxy(address(impl), abi.encodeCall(TransitExecutor.initialize, (owner, address(0)))))
+        );
     }
 
     // ── message builder (CCTP v1 offsets) ──
@@ -218,11 +212,10 @@ contract TransitExecutorTest is Test {
         bytes memory m = _goodMessage(AMOUNT, _nonce(1));
 
         vm.prank(operator);
-        executor.executeTransit(m, "att", routeSender, 3, NEXT_HOP, FEE, MAX_FEE, FINALITY, DEST_CALLER);
+        executor.executeTransit(m, "att", routeSender, 3, NEXT_HOP, MAX_FEE, FINALITY, DEST_CALLER);
 
         assertEq(forwarder.callCount(), 1);
         assertEq(forwarder.lastMinted(), AMOUNT, "minted must be the measured delta");
-        assertEq(forwarder.lastFeeAmount(), FEE);
         assertEq(forwarder.lastMaxFee(), MAX_FEE);
         assertEq(forwarder.lastMinFinality(), FINALITY);
         assertEq(usdc.balanceOf(address(executor)), 0, "the executor must never hold funds");
@@ -233,17 +226,16 @@ contract TransitExecutorTest is Test {
     function test_X02_DestinationCallerPassesThrough() public {
         bytes32 destCaller = bytes32(uint256(0xCA11E5));
         vm.prank(operator);
-        executor.executeTransit(_goodMessage(AMOUNT, _nonce(2)), "att", routeSender, 3, NEXT_HOP, FEE, MAX_FEE, FINALITY, destCaller);
+        executor.executeTransit(
+            _goodMessage(AMOUNT, _nonce(2)), "att", routeSender, 3, NEXT_HOP, MAX_FEE, FINALITY, destCaller
+        );
 
         assertEq(forwarder.lastDestinationCaller(), destCaller);
     }
 
-
     function test_X03_ExecuteRefund() public {
         vm.prank(operator);
-        executor.executeRefund(
-            _goodMessage(AMOUNT, _nonce(3)), "att", routeSender, 3, NEXT_HOP
-        );
+        executor.executeRefund(_goodMessage(AMOUNT, _nonce(3)), "att", routeSender, 3, NEXT_HOP);
 
         assertTrue(forwarder.lastWasRefund());
         assertEq(forwarder.lastMinted(), AMOUNT);
@@ -256,7 +248,7 @@ contract TransitExecutorTest is Test {
         bytes memory m = _buildMessage(LOCAL_DOMAIN, _nonce(4), _toB32(address(other)), AMOUNT);
 
         vm.prank(operator);
-        executor.executeTransit(m, "att", routeSender, 3, NEXT_HOP, FEE, MAX_FEE, FINALITY, DEST_CALLER);
+        executor.executeTransit(m, "att", routeSender, 3, NEXT_HOP, MAX_FEE, FINALITY, DEST_CALLER);
 
         assertEq(other.callCount(), 1, "the message named `other`, so `other` must be called");
         assertEq(forwarder.callCount(), 0, "the default forwarder must not be involved");
@@ -268,7 +260,9 @@ contract TransitExecutorTest is Test {
         usdc.mint(address(forwarder), 777); // dust from an earlier failure
 
         vm.prank(operator);
-        executor.executeTransit(_goodMessage(AMOUNT, _nonce(5)), "att", routeSender, 3, NEXT_HOP, FEE, MAX_FEE, FINALITY, DEST_CALLER);
+        executor.executeTransit(
+            _goodMessage(AMOUNT, _nonce(5)), "att", routeSender, 3, NEXT_HOP, MAX_FEE, FINALITY, DEST_CALLER
+        );
 
         assertEq(forwarder.lastMinted(), AMOUNT, "per-message accounting must exclude pre-existing balance");
     }
@@ -284,7 +278,9 @@ contract TransitExecutorTest is Test {
 
         vm.prank(operator);
         vm.expectRevert(ITransitExecutor.AmountMismatch.selector);
-        executor.executeTransit(_goodMessage(AMOUNT, _nonce(6)), "att", routeSender, 3, NEXT_HOP, FEE, MAX_FEE, FINALITY, DEST_CALLER);
+        executor.executeTransit(
+            _goodMessage(AMOUNT, _nonce(6)), "att", routeSender, 3, NEXT_HOP, MAX_FEE, FINALITY, DEST_CALLER
+        );
 
         assertEq(forwarder.callCount(), 0, "nothing reached the forwarder");
     }
@@ -295,7 +291,9 @@ contract TransitExecutorTest is Test {
         usdc.mint(address(forwarder), 999);
 
         vm.prank(operator);
-        executor.executeTransit(_goodMessage(AMOUNT, _nonce(61)), "att", routeSender, 3, NEXT_HOP, FEE, MAX_FEE, FINALITY, DEST_CALLER);
+        executor.executeTransit(
+            _goodMessage(AMOUNT, _nonce(61)), "att", routeSender, 3, NEXT_HOP, MAX_FEE, FINALITY, DEST_CALLER
+        );
 
         assertEq(forwarder.lastMinted(), AMOUNT, "dust excluded, and still equal to the attested amount");
     }
@@ -309,7 +307,7 @@ contract TransitExecutorTest is Test {
 
         vm.prank(operator);
         vm.expectRevert(ITransitExecutor.NotEvmRecipient.selector);
-        executor.executeTransit(m, "att", routeSender, 3, NEXT_HOP, FEE, MAX_FEE, FINALITY, DEST_CALLER);
+        executor.executeTransit(m, "att", routeSender, 3, NEXT_HOP, MAX_FEE, FINALITY, DEST_CALLER);
 
         assertFalse(transmitter.usedNonce(_nonce(7)), "must fail before the mint, leaving the nonce unspent");
     }
@@ -323,7 +321,7 @@ contract TransitExecutorTest is Test {
 
         vm.prank(operator);
         vm.expectRevert(ITransitExecutor.FactoryNotSet.selector);
-        executor.executeTransit(m, "att", routeSender, 3, NEXT_HOP, FEE, MAX_FEE, FINALITY, DEST_CALLER);
+        executor.executeTransit(m, "att", routeSender, 3, NEXT_HOP, MAX_FEE, FINALITY, DEST_CALLER);
 
         assertFalse(transmitter.usedNonce(_nonce(8)), "must fail before the mint");
     }
@@ -336,33 +334,45 @@ contract TransitExecutorTest is Test {
         bytes memory short_ = new bytes(247);
         vm.prank(operator);
         vm.expectRevert();
-        executor.executeTransit(short_, "att", routeSender, 3, NEXT_HOP, FEE, MAX_FEE, FINALITY, DEST_CALLER);
+        executor.executeTransit(short_, "att", routeSender, 3, NEXT_HOP, MAX_FEE, FINALITY, DEST_CALLER);
         assertEq(forwarder.callCount(), 0, "nothing reached the forwarder");
     }
 
     // ── X-10 / X-11 / X-12 static params, checked before the expensive leg ──
 
-    function test_X10_ZeroFeeRevertsBeforeMint() public {
+    /// @dev v1 also gated feeAmount != 0 here (ZeroFee). v2 takes no fee, so finality is the ONLY static param left,
+    ///      and `maxFee` deliberately did NOT take its place: it is bounded against `minted`, which is not known
+    ///      until after the mint, so the executor must pass it through untouched — including 0.
+    function test_X10_MaxFeeIsNotAStaticParamAndPassesThrough() public {
         vm.prank(operator);
-        vm.expectRevert(ITransitForwarder.ZeroFee.selector);
-        executor.executeTransit(_goodMessage(AMOUNT, _nonce(10)), "att", routeSender, 3, NEXT_HOP, 0, MAX_FEE, FINALITY, DEST_CALLER);
+        executor.executeTransit(
+            _goodMessage(AMOUNT, _nonce(10)), "att", routeSender, 3, NEXT_HOP, 0, FINALITY, DEST_CALLER
+        );
 
-        assertFalse(transmitter.usedNonce(_nonce(10)), "nonce must be unspent: no signature-verification gas burned");
+        assertEq(forwarder.callCount(), 1, "the executor forwarded rather than gating");
+        assertEq(forwarder.lastMaxFee(), 0, "maxFee reaches the forwarder unchanged");
+        assertTrue(transmitter.usedNonce(_nonce(10)), "and the mint went through");
     }
 
     function test_X11_InvalidFinalityRevertsBeforeMint() public {
         vm.prank(operator);
         vm.expectRevert(ITransitForwarder.InvalidFinalityThreshold.selector);
-        executor.executeTransit(_goodMessage(AMOUNT, _nonce(11)), "att", routeSender, 3, NEXT_HOP, FEE, MAX_FEE, 1500, DEST_CALLER);
+        executor.executeTransit(
+            _goodMessage(AMOUNT, _nonce(11)), "att", routeSender, 3, NEXT_HOP, MAX_FEE, 1500, DEST_CALLER
+        );
 
         assertFalse(transmitter.usedNonce(_nonce(11)));
     }
 
     function test_X12_BothFinalityValuesAccepted() public {
         vm.prank(operator);
-        executor.executeTransit(_goodMessage(AMOUNT, _nonce(121)), "att", routeSender, 3, NEXT_HOP, FEE, MAX_FEE, 1000, DEST_CALLER);
+        executor.executeTransit(
+            _goodMessage(AMOUNT, _nonce(121)), "att", routeSender, 3, NEXT_HOP, MAX_FEE, 1000, DEST_CALLER
+        );
         vm.prank(operator);
-        executor.executeTransit(_goodMessage(AMOUNT, _nonce(122)), "att", routeSender, 3, NEXT_HOP, FEE, MAX_FEE, 2000, DEST_CALLER);
+        executor.executeTransit(
+            _goodMessage(AMOUNT, _nonce(122)), "att", routeSender, 3, NEXT_HOP, MAX_FEE, 2000, DEST_CALLER
+        );
         assertEq(forwarder.callCount(), 2);
     }
 
@@ -372,23 +382,31 @@ contract TransitExecutorTest is Test {
         transmitter.setForceFail(true);
         vm.prank(operator);
         vm.expectRevert(ITransitExecutor.ReceiveFailed.selector);
-        executor.executeTransit(_goodMessage(AMOUNT, _nonce(131)), "att", routeSender, 3, NEXT_HOP, FEE, MAX_FEE, FINALITY, DEST_CALLER);
+        executor.executeTransit(
+            _goodMessage(AMOUNT, _nonce(131)), "att", routeSender, 3, NEXT_HOP, MAX_FEE, FINALITY, DEST_CALLER
+        );
     }
 
     function test_X13b_NothingMinted() public {
         vm.prank(operator);
         vm.expectRevert(ITransitExecutor.NothingMinted.selector);
-        executor.executeTransit(_goodMessage(0, _nonce(132)), "att", routeSender, 3, NEXT_HOP, FEE, MAX_FEE, FINALITY, DEST_CALLER);
+        executor.executeTransit(
+            _goodMessage(0, _nonce(132)), "att", routeSender, 3, NEXT_HOP, MAX_FEE, FINALITY, DEST_CALLER
+        );
     }
 
     function test_X13c_NonceReplayRejected() public {
         bytes32 n = _nonce(133);
         vm.prank(operator);
-        executor.executeTransit(_goodMessage(AMOUNT, n), "att", routeSender, 3, NEXT_HOP, FEE, MAX_FEE, FINALITY, DEST_CALLER);
+        executor.executeTransit(
+            _goodMessage(AMOUNT, n), "att", routeSender, 3, NEXT_HOP, MAX_FEE, FINALITY, DEST_CALLER
+        );
 
         vm.prank(operator);
         vm.expectRevert(ITransitExecutor.ReceiveFailed.selector);
-        executor.executeTransit(_goodMessage(AMOUNT, n), "att", routeSender, 3, NEXT_HOP, FEE, MAX_FEE, FINALITY, DEST_CALLER);
+        executor.executeTransit(
+            _goodMessage(AMOUNT, n), "att", routeSender, 3, NEXT_HOP, MAX_FEE, FINALITY, DEST_CALLER
+        );
     }
 
     /// @dev An unset destinationCaller would leave the next hop callable by anyone — the same griefing path this
@@ -397,8 +415,7 @@ contract TransitExecutorTest is Test {
         vm.prank(operator);
         vm.expectRevert(ITransitExecutor.EmptyDestinationCaller.selector);
         executor.executeTransit(
-            _goodMessage(AMOUNT, _nonce(142)), "att", routeSender, 3, NEXT_HOP,
-            FEE, MAX_FEE, FINALITY, bytes32(0)
+            _goodMessage(AMOUNT, _nonce(142)), "att", routeSender, 3, NEXT_HOP, MAX_FEE, FINALITY, bytes32(0)
         );
         assertFalse(transmitter.usedNonce(_nonce(142)), "must fail before the mint");
     }
@@ -410,7 +427,7 @@ contract TransitExecutorTest is Test {
         vm.startPrank(address(0xBAD));
 
         vm.expectRevert(ITransitExecutor.NotOperator.selector);
-        executor.executeTransit(m, "att", routeSender, 3, NEXT_HOP, FEE, MAX_FEE, FINALITY, DEST_CALLER);
+        executor.executeTransit(m, "att", routeSender, 3, NEXT_HOP, MAX_FEE, FINALITY, DEST_CALLER);
 
         vm.expectRevert(ITransitExecutor.NotOperator.selector);
         executor.executeRefund(m, "att", routeSender, 3, NEXT_HOP);
@@ -419,10 +436,8 @@ contract TransitExecutorTest is Test {
         // The owner is not the operator either — the split runs in both directions.
         vm.prank(owner);
         vm.expectRevert(ITransitExecutor.NotOperator.selector);
-        executor.executeTransit(m, "att", routeSender, 3, NEXT_HOP, FEE, MAX_FEE, FINALITY, DEST_CALLER);
+        executor.executeTransit(m, "att", routeSender, 3, NEXT_HOP, MAX_FEE, FINALITY, DEST_CALLER);
     }
-
-
 
     // ── X-16 atomicity: this is what the whole design buys ──
 
@@ -434,14 +449,18 @@ contract TransitExecutorTest is Test {
 
         vm.prank(operator);
         vm.expectRevert(bytes("forwarder rejected"));
-        executor.executeTransit(_goodMessage(AMOUNT, n), "att", routeSender, 3, NEXT_HOP, FEE, MAX_FEE, FINALITY, DEST_CALLER);
+        executor.executeTransit(
+            _goodMessage(AMOUNT, n), "att", routeSender, 3, NEXT_HOP, MAX_FEE, FINALITY, DEST_CALLER
+        );
 
         assertFalse(transmitter.usedNonce(n), "the whole tx rolled back, so the nonce is unspent");
         assertEq(usdc.balanceOf(address(forwarder)), 0, "no funds were left anywhere");
 
         forwarder.setForceRevert(false);
         vm.prank(operator);
-        executor.executeTransit(_goodMessage(AMOUNT, n), "att", routeSender, 3, NEXT_HOP, FEE, MAX_FEE, FINALITY, DEST_CALLER);
+        executor.executeTransit(
+            _goodMessage(AMOUNT, n), "att", routeSender, 3, NEXT_HOP, MAX_FEE, FINALITY, DEST_CALLER
+        );
         assertTrue(transmitter.usedNonce(n), "the same message succeeds on retry");
     }
 
@@ -458,7 +477,9 @@ contract TransitExecutorTest is Test {
 
         vm.prank(address(forwarder));
         vm.expectRevert(ITransitExecutor.Reentrancy.selector);
-        reentrant.executeTransit(_goodMessage(AMOUNT, _nonce(17)), "att", routeSender, 3, NEXT_HOP, FEE, MAX_FEE, FINALITY, DEST_CALLER);
+        reentrant.executeTransit(
+            _goodMessage(AMOUNT, _nonce(17)), "att", routeSender, 3, NEXT_HOP, MAX_FEE, FINALITY, DEST_CALLER
+        );
     }
 
     /// @dev The ordinary case: a callback from anyone who is not the operator dies on the gate, one step earlier.
@@ -467,7 +488,9 @@ contract TransitExecutorTest is Test {
 
         vm.prank(operator);
         vm.expectRevert(ITransitExecutor.NotOperator.selector);
-        executor.executeTransit(_goodMessage(AMOUNT, _nonce(171)), "att", routeSender, 3, NEXT_HOP, FEE, MAX_FEE, FINALITY, DEST_CALLER);
+        executor.executeTransit(
+            _goodMessage(AMOUNT, _nonce(171)), "att", routeSender, 3, NEXT_HOP, MAX_FEE, FINALITY, DEST_CALLER
+        );
     }
 
     // ── X-18 storage layout ──
@@ -555,14 +578,14 @@ contract TransitExecutorTest is Test {
 
         address addressBefore = address(executor);
         address implBefore = address(uint160(uint256(vm.load(addressBefore, ERC1967Utils.IMPLEMENTATION_SLOT))));
-        assertEq(executor.version(), 1, "baseline");
+        assertEq(executor.version(), 2, "baseline");
 
-        TransitExecutorV2 newImpl = new TransitExecutorV2(address(usdc), address(transmitter), operator);
+        TransitExecutorV3 newImpl = new TransitExecutorV3(address(usdc), address(transmitter), operator);
         vm.prank(owner);
         executor.upgradeToAndCall(address(newImpl), "");
 
         assertEq(address(executor), addressBefore, "THE address must never change - forwarders bind to it");
-        assertEq(executor.version(), 2, "executor logic swapped");
+        assertEq(executor.version(), 3, "executor logic swapped");
         assertTrue(
             address(uint160(uint256(vm.load(addressBefore, ERC1967Utils.IMPLEMENTATION_SLOT)))) != implBefore,
             "implementation slot must actually point somewhere new"
@@ -576,7 +599,7 @@ contract TransitExecutorTest is Test {
         // ...and the transit path still works end to end against the same forwarder.
         vm.prank(operator);
         executor.executeTransit(
-            _goodMessage(AMOUNT, _nonce(200)), "att", routeSender, 3, NEXT_HOP, FEE, MAX_FEE, FINALITY, DEST_CALLER
+            _goodMessage(AMOUNT, _nonce(200)), "att", routeSender, 3, NEXT_HOP, MAX_FEE, FINALITY, DEST_CALLER
         );
         assertEq(forwarder.callCount(), 1, "transit still lands after the upgrade");
         assertEq(forwarder.lastMinted(), AMOUNT);
@@ -588,7 +611,7 @@ contract TransitExecutorTest is Test {
         address attacker = address(0xBAD);
         // Deploy before any prank: a CREATE consumes the pending prank, which would leave the upgrade call coming
         // from the owner and passing.
-        address newImpl = address(new TransitExecutorV2(address(usdc), address(transmitter), operator));
+        address newImpl = address(new TransitExecutorV3(address(usdc), address(transmitter), operator));
 
         vm.prank(attacker);
         vm.expectRevert(abi.encodeWithSelector(OwnableUpgradeable.OwnableUnauthorizedAccount.selector, attacker));
@@ -607,6 +630,6 @@ contract TransitExecutorTest is Test {
         // The owner succeeds.
         vm.prank(owner);
         executor.upgradeToAndCall(newImpl, "");
-        assertEq(executor.version(), 2);
+        assertEq(executor.version(), 3);
     }
 }

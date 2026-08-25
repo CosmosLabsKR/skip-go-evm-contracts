@@ -8,7 +8,7 @@
         "internalType": "address"
       },
       {
-        "name": "paymentContract_",
+        "name": "messenger_",
         "type": "address",
         "internalType": "address"
       },
@@ -143,6 +143,19 @@
   },
   {
     "type": "function",
+    "name": "messenger",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "contract ITokenMessenger"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "mintRecipient",
     "inputs": [],
     "outputs": [
@@ -163,19 +176,6 @@
         "name": "",
         "type": "address",
         "internalType": "address"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "paymentContract",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "address",
-        "internalType": "contract ICCTPV2Relayer"
       }
     ],
     "stateMutability": "view"
@@ -253,11 +253,6 @@
       },
       {
         "name": "minted",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "feeAmount",
         "type": "uint256",
         "internalType": "uint256"
       },
@@ -380,18 +375,6 @@
         "internalType": "uint256"
       },
       {
-        "name": "transferAmount",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
-      },
-      {
-        "name": "feeAmount",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
-      },
-      {
         "name": "maxFee",
         "type": "uint256",
         "indexed": false,
@@ -425,11 +408,6 @@
   {
     "type": "error",
     "name": "EmptyMintRecipient",
-    "inputs": []
-  },
-  {
-    "type": "error",
-    "name": "FeeExceedsMinted",
     "inputs": []
   },
   {
@@ -500,11 +478,6 @@
   },
   {
     "type": "error",
-    "name": "UsdcMismatch",
-    "inputs": []
-  },
-  {
-    "type": "error",
     "name": "WrongDestination",
     "inputs": []
   },
@@ -521,11 +494,6 @@
   {
     "type": "error",
     "name": "ZeroAmount",
-    "inputs": []
-  },
-  {
-    "type": "error",
-    "name": "ZeroFee",
     "inputs": []
   }
 ]

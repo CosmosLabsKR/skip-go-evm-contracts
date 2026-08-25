@@ -13,11 +13,11 @@ import {TransitForwarderFactory} from "../src/TransitForwarderFactory.sol";
  *        ROUTE_SENDER                     route identifier and fund recovery recipient
  *        ROUTE_MINT_RECIPIENT             Injective-side recipient as bytes32 (EVM address -> left-padded)
  *
- *      There is deliberately NO destination-domain env var. This deployment routes Avalanche -> Injective only, so
- *      the domain is taken from Config; the forwarder's initialize would reject anything else with
- *      UnsupportedDestination anyway. Removing the knob removes the whole class of "typo'd the domain and shipped
- *      funds to the wrong chain" — which the CREATE2 address alone could never reveal, since a wrong-domain route
- *      still produces a perfectly valid-looking address.
+ *      There is deliberately NO destination-domain env var. Every supported source chain (Avalanche, Polygon)
+ *      routes to Injective only, so the domain is taken from Config; the forwarder's initialize would reject
+ *      anything else with UnsupportedDestination anyway. Removing the knob removes the whole class of "typo'd the
+ *      domain and shipped funds to the wrong chain" — which the CREATE2 address alone could never reveal, since a
+ *      wrong-domain route still produces a perfectly valid-looking address.
  */
 contract CreateTransitForwarderScript is BaseScript {
     function run() public {

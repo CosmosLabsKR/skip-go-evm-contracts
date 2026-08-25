@@ -11,15 +11,18 @@ solc = "0.8.30"
 # solc refuses to emit for shanghai. paris is out for a second reason: PUSH0 is emitted from shanghai onward, and
 # calls into PUSH0 bytecode fail with NotActivated on a paris target.
 #
-# TARGET CHAIN IS AVALANCHE C-CHAIN, not Injective EVM. cancun availability was PROBED DIRECTLY (2026-08-12), the
-# same way the sibling project probed Injective — eth_call against `cast call --create <opcode bytecode>` on both
-# networks. All four opcodes we depend on executed:
-#     PUSH0 0x5f  MCOPY 0x5e  TLOAD 0x5c  TSTORE 0x5d      -> OK on 43114 AND 43113
+# TARGET CHAINS ARE AVALANCHE C-CHAIN AND POLYGON PoS, not Injective EVM. cancun availability was PROBED DIRECTLY on
+# every one of them (Avalanche 2026-08-12, Polygon 2026-08-24), the same way the sibling project probed Injective —
+# eth_call against `cast call --create <opcode bytecode>`. One toml serves all four networks, so a chain that lacked
+# these opcodes would have to be excluded rather than accommodated. All four opcodes we depend on executed:
+#     PUSH0 0x5f  MCOPY 0x5e  TLOAD 0x5c  TSTORE 0x5d      -> OK on 43114, 43113, 137 AND 80002
 # and the discriminator confirmed the probe can actually fail:
-#     undefined opcode 0x21                                 -> "invalid opcode: opcode 0x21 not defined" on both
+#     undefined opcode 0x21                                 -> "invalid opcode: opcode 0x21 not defined" on all four
 # Reproduce with, e.g.:
-#     cast call --rpc-url https://api.avax.network/ext/bc/C/rpc --create 0x6020600060005e60006000f3   # MCOPY
-#     cast call --rpc-url https://api.avax-test.network/ext/bc/C/rpc --create 0x60005c5060006000f3    # TLOAD
+#     cast call --rpc-url https://api.avax.network/ext/bc/C/rpc --create 0x6020600060005e60006000f3        # MCOPY
+#     cast call --rpc-url https://api.avax-test.network/ext/bc/C/rpc --create 0x60005c5060006000f3         # TLOAD
+#     cast call --rpc-url https://polygon-bor-rpc.publicnode.com --create 0x6020600060005e60006000f3       # MCOPY
+#     cast call --rpc-url https://polygon-amoy-bor-rpc.publicnode.com --create 0x60005c5060006000f3        # TLOAD
 #
 # ⚠️ evm_version feeds type(BeaconProxy).creationCode, so changing it moves every predicted forwarder address and
 #    permanently breaks createForwarder on any factory already live. See the golden vector in

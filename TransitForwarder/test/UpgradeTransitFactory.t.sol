@@ -9,36 +9,20 @@ import {BeaconProxy} from "openzeppelin-contracts/proxy/beacon/BeaconProxy.sol";
 
 import {TransitForwarder} from "../src/TransitForwarder.sol";
 import {TransitForwarderFactory} from "../src/TransitForwarderFactory.sol";
-import {ICCTPV2Relayer} from "../src/interfaces/ICCTPV2Relayer.sol";
+import {ITokenMessenger} from "../src/interfaces/ITokenMessenger.sol";
 
 contract MockUSDC is ERC20 {
     constructor() ERC20("USD Coin", "USDC") {}
 }
 
+/// @dev Inert TokenMessengerV2 stand-in. These suites never burn — they only need a typed, non-zero address to
+///      put in the forwarder's `messenger` immutable.
+contract MockMessengerStub is ITokenMessenger {
+    function depositForBurn(uint256, uint32, bytes32, address, bytes32, uint256, uint32) external pure {}
 
-contract MockRelayerStub is ICCTPV2Relayer {
-    IERC20 public immutable usdc;
-
-    constructor(IERC20 _usdc) {
-        usdc = _usdc;
-    }
-
-    function requestCCTPTransfer(uint256, uint32, bytes32, address, uint256, uint256, uint32, bytes calldata)
+    function depositForBurnWithHook(uint256, uint32, bytes32, address, bytes32, uint256, uint32, bytes calldata)
         external
-        pure
-    {}
-
-    function requestCCTPTransferWithCaller(
-        uint256,
-        uint32,
-        bytes32,
-        address,
-        uint256,
-        uint256,
-        uint32,
-        bytes32,
-        bytes calldata
-    ) external pure {}
+        pure {}
 }
 
 /**
@@ -51,9 +35,9 @@ contract UpgradeTransitFactoryTest is Test {
 
     function setUp() public {
         MockUSDC usdc = new MockUSDC();
-        MockRelayerStub relayer = new MockRelayerStub(usdc);
+        MockMessengerStub messengerStub = new MockMessengerStub();
         TransitForwarder impl =
-            new TransitForwarder(address(usdc), address(relayer), address(0xA11CE), address(0xE8EC00), 9, 29);
+            new TransitForwarder(address(usdc), address(messengerStub), address(0xA11CE), address(0xE8EC00), 9, 29);
 
         TransitForwarderFactory factoryImpl = new TransitForwarderFactory();
         factory = TransitForwarderFactory(

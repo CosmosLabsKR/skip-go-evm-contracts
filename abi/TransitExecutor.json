@@ -103,11 +103,6 @@
         "internalType": "bytes32"
       },
       {
-        "name": "feeAmount",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
         "name": "maxFee",
         "type": "uint256",
         "internalType": "uint256"
@@ -520,11 +515,6 @@
   {
     "type": "error",
     "name": "ZeroAddress",
-    "inputs": []
-  },
-  {
-    "type": "error",
-    "name": "ZeroFee",
     "inputs": []
   }
 ]
