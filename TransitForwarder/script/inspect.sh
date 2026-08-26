@@ -2,9 +2,11 @@
 #
 # Read a deployed TransitExecutor, or a TransitForwarderFactory and the chain it installs.
 #
-#   ./script/inspect.sh 0xEXECUTOR --chain avalanche              # executor only
-#   ./script/inspect.sh 0xFACTORY  --chain polygon-testnet        # factory -> beacon -> forwarder impl
-#   ./script/inspect.sh 0xFACTORY  --chain polygon --json
+#   ./script/inspect.sh 0xEXECUTOR --chain avalanche --env prod       # executor only
+#   ./script/inspect.sh 0xFACTORY  --chain polygon-testnet --env dev  # factory -> beacon -> forwarder impl
+#   ./script/inspect.sh 0xFACTORY  --chain polygon --env prod --json
+#
+# --env is REQUIRED: every chain hosts a PROD and a DEV deployment that differ ONLY in `operator`.
 #
 # Read-only: no key, no broadcast, nothing signed. Runnable from anywhere; it cds to the foundry root itself.
 #
@@ -58,16 +60,19 @@ ZERO=0x0000000000000000000000000000000000000000
 
 # ── args ────────────────────────────────────────────────────────────────────
 TARGET="${TRANSIT_FORWARDER_FACTORY_PROXY:-${TRANSIT_EXECUTOR_PROXY:-}}"
-CHAIN=""; RPC_OVERRIDE=""; JSON=0
+CHAIN=""; RPC_OVERRIDE=""; JSON=0; ENVIRONMENT=""
 
 usage() {
   cat <<EOF
-Usage: script/inspect.sh <address> --chain <name> [--rpc-url <url>] [--json]
+Usage: script/inspect.sh <address> --chain <name> --env <prod|dev> [--rpc-url <url>] [--json]
 
   <address>        a TransitExecutor proxy or a TransitForwarderFactory proxy. The kind is detected, and the
                    report covers that contract only. Falls back to \$TRANSIT_FORWARDER_FACTORY_PROXY, then
                    \$TRANSIT_EXECUTOR_PROXY.
   --chain          one of the names below
+  --env            REQUIRED. prod or dev — EVERY chain hosts both, and they differ only in \`operator\`.
+                   No default: the two resolve identically apart from that one key, so a guess would grade the
+                   wrong deployment while every other field still looked correct.
   --rpc-url        use this RPC instead of the table's (still checked against the chain id)
   --json           emit one JSON object instead of the human-readable block
 
@@ -79,6 +84,7 @@ EOF
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --chain)   CHAIN="${2:-}"; shift 2 ;;
+    --env)     ENVIRONMENT="${2:-}"; shift 2 ;;
     --rpc-url) RPC_OVERRIDE="${2:-}"; shift 2 ;;
     --json)    JSON=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -89,6 +95,13 @@ done
 
 [[ -n "$TARGET" ]] || { echo "error: an executor or factory proxy address is required" >&2; usage >&2; exit 1; }
 [[ -n "$CHAIN"  ]] || { echo "error: --chain is required" >&2; usage >&2; exit 1; }
+[[ -n "$ENVIRONMENT" ]] || {
+  echo "error: --env is required (prod | dev)" >&2
+  echo "       Every chain hosts BOTH deployments and they differ only in 'operator', so there is no safe" >&2
+  echo "       default — guessing would grade the wrong one while every other field still looked correct." >&2
+  usage >&2; exit 1; }
+[[ "$ENVIRONMENT" == "prod" || "$ENVIRONMENT" == "dev" ]] || {
+  echo "error: --env must be 'prod' or 'dev' (got '$ENVIRONMENT')" >&2; exit 1; }
 
 RPC=""; WANT_ID=""; SUFFIX=""
 for e in "${CHAINS[@]}"; do
@@ -136,6 +149,19 @@ case "$SUFFIX" in
   *_TESTNET) MESSENGER_CONST="MESSENGER_TESTNET_TIER" ;;
   *)         MESSENGER_CONST="MESSENGER_MAINNET_TIER" ;;
 esac
+# ⚠️ The operator is the ONE value keyed by ENVIRONMENT rather than by chain — the same key drives every chain of
+#    an environment, so there are exactly two constants and the chain suffix plays no part. Every chain hosts both
+#    deployments; resolving without --env would grade a correct DEV deployment against the PROD key and report a
+#    bogus DRIFT, and a guard that always cries wolf gets routinely bypassed.
+# ⚠️ Plain `tr`, not ${VAR^^}: that is bash 4+, and macOS still ships bash 3.2 — where it does not merely fail
+#    loudly but expands to nothing, leaving the expected value EMPTY. verdict() reads an empty expectation as
+#    "(no Config value)", which is not a failure, so the operator would have gone ungraded while the script still
+#    exited 0. Resolved once here and asserted, rather than being recomputed per call site.
+OPERATOR_CONST="OPERATOR_$(printf '%s' "$ENVIRONMENT" | tr '[:lower:]' '[:upper:]')"
+EXP_OPERATOR="$(grep -oE "^address constant $OPERATOR_CONST = 0x[0-9a-fA-F]{40}" script/Config.sol | grep -oE '0x[0-9a-fA-F]{40}' || true)"
+[[ -n "$EXP_OPERATOR" ]] || {
+  echo "error: $OPERATOR_CONST not found in script/Config.sol - cannot grade the operator" >&2; exit 1; }
+config_operator() { printf '%s' "$EXP_OPERATOR"; }
 config_messenger() {
   grep -oE "^address constant $MESSENGER_CONST = 0x[0-9a-fA-F]{40}" script/Config.sol | grep -oE '0x[0-9a-fA-F]{40}' || true
 }
@@ -214,13 +240,14 @@ if [[ "$KIND" == "executor" ]]; then
 
   V_USDC="$(verdict "$X_USDC" "$(config_addr USDC)")"
   V_TRANSMITTER="$(verdict "$X_TRANSMITTER" "$(config_addr TRANSMITTER)")"
-  V_OPERATOR="$(verdict "$X_OPERATOR" "$(config_addr OPERATOR)")"
+  V_OPERATOR="$(verdict "$X_OPERATOR" "$(config_operator)")"
   VERDICTS="$V_USDC$V_TRANSMITTER$V_OPERATOR$X_PROXY_V"
 
   if [[ $JSON -eq 1 ]]; then
     cat <<EOF
 {
   "chain": "$CHAIN",
+  "env": "$ENVIRONMENT",
   "chainId": $GOT_ID,
   "kind": "TransitExecutor",
   "executor": {
@@ -247,7 +274,7 @@ if [[ "$KIND" == "executor" ]]; then
 EOF
   else
     echo "=========================================================="
-    echo " $CHAIN (chain id $GOT_ID, verified) - TransitExecutor"
+    echo " $CHAIN [$ENVIRONMENT] (chain id $GOT_ID, verified) - TransitExecutor"
     echo "=========================================================="
     printf "   address        = %s\n" "$TARGET"
     printf "   implementation = %-42s %s\n" "$X_IMPL" "$X_PROXY_V"
@@ -334,7 +361,7 @@ else
   else
     V_MESSENGER="$(verdict "$MESSENGER" "$(config_messenger)")"
   fi
-  V_OPERATOR="$(verdict "$OPERATOR" "$(config_addr OPERATOR)")"
+  V_OPERATOR="$(verdict "$OPERATOR" "$(config_operator)")"
   V_LOCAL_DOMAIN="$(verdict "$LOCAL_DOMAIN" "$(config_u32 "$LOCAL_DOMAIN_CONST")")"
   V_ALLOWED_DOMAIN="$(verdict "$ALLOWED_DOMAIN" "$(config_u32 INJECTIVE_CCTP_DOMAIN)")"
 
@@ -374,6 +401,7 @@ else
     cat <<EOF
 {
   "chain": "$CHAIN",
+  "env": "$ENVIRONMENT",
   "chainId": $GOT_ID,
   "kind": "TransitForwarderFactory",
   "factory": {
@@ -418,7 +446,7 @@ else
 EOF
   else
     echo "=========================================================="
-    echo " $CHAIN (chain id $GOT_ID, verified) - TransitForwarderFactory"
+    echo " $CHAIN [$ENVIRONMENT] (chain id $GOT_ID, verified) - TransitForwarderFactory"
     echo "=========================================================="
     echo " factory (proxy)"
     printf "   address        = %s\n" "$TARGET"

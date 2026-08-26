@@ -14,6 +14,12 @@ import {IReceiver} from "../src/interfaces/IReceiver.sol";
 
 /// @dev Exposes BaseScript's internal guards so they can be exercised directly.
 contract Harness is BaseScript {
+    /// @dev DEPLOY_ENV is required at runtime, but tests must not depend on the process environment (forge shares
+    ///      it across test contracts run in parallel). Pin PROD here; DevHarness pins DEV.
+    function _isDevEnv() internal pure virtual override returns (bool) {
+        return false;
+    }
+
     bool private _override;
     bool private _allow;
 
@@ -54,6 +60,22 @@ contract Harness is BaseScript {
 
     function assertIsProxy(address a) external view {
         _assertIsProxy(a, "TRANSIT_EXECUTOR_PROXY");
+    }
+}
+
+/// @dev A Harness pinned to the DEV environment. `_isDevEnv` is called from BaseScript's constructor, so the
+///      override returns a compile-time constant — it must not read derived state, and using vm.setEnv would race
+///      with other test contracts (forge shares the real process environment across them).
+contract DevHarness is Harness {
+    function _isDevEnv() internal pure override returns (bool) {
+        return true;
+    }
+}
+
+/// @dev Exposes the env parser so the REQUIRED-ness can be tested without touching the process environment.
+contract EnvParseHarness is Harness {
+    function parse(string memory e) external pure returns (bool) {
+        return _parseEnv(e);
     }
 }
 
@@ -159,7 +181,7 @@ contract ScriptGuardsTest is Test {
         return _impl(
             USDC_AVALANCHE_TESTNET,
             MESSENGER_TESTNET_TIER,
-            OPERATOR_AVALANCHE_TESTNET,
+            OPERATOR_PROD,
             EXECUTOR_PROXY,
             AVALANCHE_CCTP_DOMAIN,
             INJECTIVE_CCTP_DOMAIN
@@ -189,7 +211,7 @@ contract ScriptGuardsTest is Test {
         TransitForwarder drifted = _impl(
             USDC_AVALANCHE_TESTNET,
             MESSENGER_TESTNET_TIER,
-            OPERATOR_AVALANCHE_TESTNET,
+            OPERATOR_PROD,
             OTHER_EXECUTOR,
             AVALANCHE_CCTP_DOMAIN,
             INJECTIVE_CCTP_DOMAIN
@@ -202,7 +224,7 @@ contract ScriptGuardsTest is Test {
         TransitForwarder drifted = _impl(
             USDC_AVALANCHE_TESTNET,
             MESSENGER_TESTNET_TIER,
-            OPERATOR_AVALANCHE_TESTNET,
+            OPERATOR_PROD,
             EXECUTOR_PROXY,
             OTHER_DOMAIN,
             INJECTIVE_CCTP_DOMAIN
@@ -218,7 +240,7 @@ contract ScriptGuardsTest is Test {
         TransitForwarder drifted = _impl(
             OTHER_USDC,
             MESSENGER_TESTNET_TIER,
-            OPERATOR_AVALANCHE_TESTNET,
+            OPERATOR_PROD,
             EXECUTOR_PROXY,
             AVALANCHE_CCTP_DOMAIN,
             INJECTIVE_CCTP_DOMAIN
@@ -247,7 +269,7 @@ contract ScriptGuardsTest is Test {
     );
 
     function _v1Impl(address executor_) internal returns (address) {
-        return address(new V1ImplStandIn(USDC_AVALANCHE_TESTNET, OPERATOR_AVALANCHE_TESTNET, executor_));
+        return address(new V1ImplStandIn(USDC_AVALANCHE_TESTNET, OPERATOR_PROD, executor_));
     }
 
     /// @dev ⚠️ REGRESSION. A pre-v2 impl has no `messenger()`, and TransitForwarder's fallback REVERTS
@@ -321,13 +343,13 @@ contract ScriptGuardsTest is Test {
 
     function test_ExecutorGuardAcceptsConfigImpl() public {
         harness.assertExecutor(
-            address(_executorImpl(USDC_AVALANCHE_TESTNET, TRANSMITTER_AVALANCHE_TESTNET, OPERATOR_AVALANCHE_TESTNET))
+            address(_executorImpl(USDC_AVALANCHE_TESTNET, TRANSMITTER_AVALANCHE_TESTNET, OPERATOR_PROD))
         );
     }
 
     function test_ExecutorGuardBlocksTransmitterDrift() public {
         // Construct BEFORE arming expectRevert: it would otherwise be consumed by this CREATE.
-        address drifted = address(_executorImpl(USDC_AVALANCHE_TESTNET, OTHER_TRANSMITTER, OPERATOR_AVALANCHE_TESTNET));
+        address drifted = address(_executorImpl(USDC_AVALANCHE_TESTNET, OTHER_TRANSMITTER, OPERATOR_PROD));
         vm.expectRevert(DRIFT_REVERT);
         harness.assertExecutor(drifted);
     }
@@ -376,6 +398,50 @@ contract ScriptGuardsTest is Test {
     function test_AssertIsProxyRejectsCodelessAddress() public {
         vm.expectRevert(bytes("no code at TRANSIT_EXECUTOR_PROXY"));
         harness.assertIsProxy(address(0xC0DE1E57));
+    }
+
+    // ── DEPLOY_ENV: every chain hosts BOTH a PROD and a DEV deployment, differing only in `operator` ──
+
+    /// @dev ⚠️ REQUIRED, no default. PROD and DEV sit on the same chain and resolve identically apart from the
+    ///      operator key, so a defaulted guess would produce a config that looks entirely correct while binding
+    ///      the wrong key. Refusing is the only honest behaviour.
+    function test_DeployEnvIsRequiredAndValidated() public {
+        EnvParseHarness h = new EnvParseHarness();
+        bytes memory err = bytes("DEPLOY_ENV is required and must be 'prod' or 'dev' - it selects the operator key");
+
+        assertTrue(h.parse("dev"), "dev");
+        assertFalse(h.parse("prod"), "prod");
+
+        vm.expectRevert(err);
+        h.parse(""); // unset
+        vm.expectRevert(err);
+        h.parse("staging");
+        vm.expectRevert(err);
+        h.parse("DEV"); // case-sensitive on purpose: no fuzzy matching on a funds-relevant switch
+    }
+
+    /// @dev The operator is keyed by ENVIRONMENT ONLY — the same key drives every chain of an environment. Adding
+    ///      a chain must never add a third key.
+    function test_OperatorIsKeyedByEnvironmentNotChain() public {
+        uint256[4] memory chains = [CHAIN_AVALANCHE, CHAIN_AVALANCHE_TESTNET, CHAIN_POLYGON, CHAIN_POLYGON_TESTNET];
+        for (uint256 i = 0; i < chains.length; i++) {
+            vm.chainId(chains[i]);
+            assertEq(new Harness().operator(), OPERATOR_PROD, "prod key on every chain");
+            assertEq(new DevHarness().operator(), OPERATOR_DEV, "dev key on every chain");
+        }
+        assertTrue(OPERATOR_PROD != OPERATOR_DEV, "the two environments must not collapse");
+    }
+
+    /// @dev The env axis must not touch anything else — only `operator` differs between the two deployments.
+    function test_DevEnvChangesOnlyTheOperator() public {
+        vm.chainId(CHAIN_POLYGON);
+        Harness prod = new Harness();
+        Harness dev = new DevHarness();
+        assertEq(dev.usdc(), prod.usdc());
+        assertEq(dev.transmitter(), prod.transmitter());
+        assertEq(dev.messenger(), prod.messenger());
+        assertEq(uint256(dev.localDomain()), uint256(prod.localDomain()));
+        assertTrue(dev.isDev() && !prod.isDev());
     }
 
     function test_UnsupportedChainRejected() public {
@@ -429,7 +495,7 @@ contract ScriptGuardsPolygonTest is Test {
         return new TransitForwarder(
             USDC_POLYGON_TESTNET,
             MESSENGER_TESTNET_TIER,
-            OPERATOR_POLYGON_TESTNET,
+            OPERATOR_PROD,
             EXECUTOR_PROXY,
             localDomain_,
             INJECTIVE_CCTP_DOMAIN
@@ -441,7 +507,7 @@ contract ScriptGuardsPolygonTest is Test {
         assertEq(harness.usdc(), USDC_POLYGON_TESTNET);
         assertEq(harness.transmitter(), TRANSMITTER_POLYGON_TESTNET);
         assertEq(harness.messenger(), MESSENGER_TESTNET_TIER);
-        assertEq(harness.operator(), OPERATOR_POLYGON_TESTNET);
+        assertEq(harness.operator(), OPERATOR_PROD);
         assertEq(uint256(harness.localDomain()), uint256(POLYGON_CCTP_DOMAIN));
     }
 
@@ -451,7 +517,7 @@ contract ScriptGuardsPolygonTest is Test {
         assertEq(mainnetHarness.usdc(), USDC_POLYGON);
         assertEq(mainnetHarness.transmitter(), TRANSMITTER_POLYGON);
         assertEq(mainnetHarness.messenger(), MESSENGER_MAINNET_TIER);
-        assertEq(mainnetHarness.operator(), OPERATOR_POLYGON);
+        assertEq(mainnetHarness.operator(), OPERATOR_PROD);
         assertEq(uint256(mainnetHarness.localDomain()), uint256(POLYGON_CCTP_DOMAIN));
     }
 
@@ -469,7 +535,7 @@ contract ScriptGuardsPolygonTest is Test {
 
     function test_ExecutorGuardAcceptsConfigImpl() public {
         harness.assertExecutor(
-            address(new TransitExecutor(USDC_POLYGON_TESTNET, TRANSMITTER_POLYGON_TESTNET, OPERATOR_POLYGON_TESTNET))
+            address(new TransitExecutor(USDC_POLYGON_TESTNET, TRANSMITTER_POLYGON_TESTNET, OPERATOR_PROD))
         );
     }
 
@@ -477,7 +543,7 @@ contract ScriptGuardsPolygonTest is Test {
     ///      a contract that does not exist on this chain.
     function test_ExecutorGuardBlocksForeignTransmitter() public {
         address drifted =
-            address(new TransitExecutor(USDC_POLYGON_TESTNET, TRANSMITTER_AVALANCHE_TESTNET, OPERATOR_POLYGON_TESTNET));
+            address(new TransitExecutor(USDC_POLYGON_TESTNET, TRANSMITTER_AVALANCHE_TESTNET, OPERATOR_PROD));
         vm.expectRevert(DRIFT_REVERT);
         harness.assertExecutor(drifted);
     }

@@ -21,6 +21,9 @@ import {TransitExecutor} from "../src/TransitExecutor.sol";
  *         a flag — decides which addresses get baked into an implementation. Note the messenger address is IDENTICAL
  *         on every chain of a network tier, so a wrong-RPC run cannot be caught by eyeballing it — LOCAL_DOMAIN is
  *         the immutable that actually differs.
+ *
+ *         ⚠️ Each chain then hosts TWO deployments, PROD and DEV, differing only in `operator`. DEPLOY_ENV picks
+ *         one and is REQUIRED — see _isDevEnv.
  * @dev ⚠️ REDUCED COPY of ForwarderFactory/script/BaseScript.sol.
  *
  *      The original probes a kind-specific getter to tell Inbound from Outbound impls. There is only one kind of
@@ -39,31 +42,37 @@ abstract contract BaseScript is Script {
     /// @dev Resolved here rather than read from Config at the use site: with more than one supported chain, a
     ///      chain-specific constant used directly is a silent single-chain hard-code. See the SelfLoop note below.
     uint32 public immutable localDomain;
+    /// @notice Which of the two deployments on this chain this run targets: PROD or DEV.
+    /// @dev Both exist on EVERY supported chain, mainnet and testnet alike, and `operator` is the only value that
+    ///      differs between them — see the OPERATOR section in Config.
+    bool public immutable isDev;
 
     constructor() {
+        // Environment first, and it is REQUIRED: it decides the operator key, and nothing else in the resolved
+        // config would look wrong if it were guessed — every other value is chain-derived, so PROD and DEV on the
+        // same chain resolve identically apart from this one field.
+        isDev = _isDevEnv();
+        operator = isDev ? OPERATOR_DEV : OPERATOR_PROD;
+
         if (block.chainid == CHAIN_AVALANCHE) {
             usdc = USDC_AVALANCHE;
             transmitter = TRANSMITTER_AVALANCHE;
             messenger = MESSENGER_MAINNET_TIER;
-            operator = OPERATOR_AVALANCHE;
             localDomain = AVALANCHE_CCTP_DOMAIN;
         } else if (block.chainid == CHAIN_AVALANCHE_TESTNET) {
             usdc = USDC_AVALANCHE_TESTNET;
             transmitter = TRANSMITTER_AVALANCHE_TESTNET;
             messenger = MESSENGER_TESTNET_TIER;
-            operator = OPERATOR_AVALANCHE_TESTNET;
             localDomain = AVALANCHE_CCTP_DOMAIN;
         } else if (block.chainid == CHAIN_POLYGON) {
             usdc = USDC_POLYGON;
             transmitter = TRANSMITTER_POLYGON;
             messenger = MESSENGER_MAINNET_TIER;
-            operator = OPERATOR_POLYGON;
             localDomain = POLYGON_CCTP_DOMAIN;
         } else if (block.chainid == CHAIN_POLYGON_TESTNET) {
             usdc = USDC_POLYGON_TESTNET;
             transmitter = TRANSMITTER_POLYGON_TESTNET;
             messenger = MESSENGER_TESTNET_TIER;
-            operator = OPERATOR_POLYGON_TESTNET;
             localDomain = POLYGON_CCTP_DOMAIN;
         } else {
             revert("Chain not supported.");
@@ -73,6 +82,26 @@ abstract contract BaseScript is Script {
         // destination could never produce a usable transfer, and TransitForwarder's constructor would revert
         // SelfLoop at deploy time anyway. Failing in the constructor names the cause instead.
         require(localDomain != INJECTIVE_CCTP_DOMAIN, "localDomain == INJECTIVE_CCTP_DOMAIN (SelfLoop)");
+    }
+
+    /// @dev Which of the two deployments on this chain to target. REQUIRED — there is deliberately no default:
+    ///      PROD and DEV differ only in the operator key, so a wrong guess produces a config that looks entirely
+    ///      correct while binding the wrong key.
+    ///
+    ///      ⚠️ `virtual`, and it MUST stay free of derived state: it is called from this constructor, so an
+    ///      override may only return a compile-time constant or read the environment. Tests override it with a
+    ///      constant instead of using vm.setEnv, which writes the real process environment that forge shares
+    ///      across the test contracts it runs in parallel.
+    function _isDevEnv() internal view virtual returns (bool) {
+        return _parseEnv(vm.envOr("DEPLOY_ENV", string("")));
+    }
+
+    /// @dev Split out and `pure` so the accept/reject rules are testable without touching the process environment.
+    function _parseEnv(string memory env) internal pure returns (bool dev) {
+        bytes32 h = keccak256(bytes(env));
+        if (h == keccak256(bytes("dev"))) return true;
+        if (h == keccak256(bytes("prod"))) return false;
+        revert("DEPLOY_ENV is required and must be 'prod' or 'dev' - it selects the operator key");
     }
 
     /// @dev The TransitExecutor PROXY. Not a Config constant: the address is only known after deployment, and

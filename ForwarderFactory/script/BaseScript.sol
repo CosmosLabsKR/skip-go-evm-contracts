@@ -22,21 +22,49 @@ abstract contract BaseScript is Script {
     address public immutable operator;
     // inbound deps
     address public immutable transmitter; // CCTP v2 MessageTransmitter (receiveMessage)
+    /// @notice Which of the two deployments on this chain this run targets: PROD or DEV.
+    /// @dev Both exist on EVERY supported chain, mainnet and testnet alike, and `operator` is the only value that
+    ///      differs between them — see the OPERATOR section in Config.
+    bool public immutable isDev;
 
     constructor() {
+        // Environment first, and it is REQUIRED: it decides the operator key, and nothing else in the resolved
+        // config would look wrong if it were guessed — every other value is chain-derived, so PROD and DEV on the
+        // same chain resolve identically apart from this one field.
+        isDev = _isDevEnv();
+        operator = isDev ? OPERATOR_DEV : OPERATOR_PROD;
+
         if (block.chainid == CHAIN_INJECTIVE) {
             usdc = USDC_INJECTIVE;
             paymentContract = PAYMENT_CONTRACT_INJECTIVE;
-            operator = OPERATOR_INJECTIVE;
             transmitter = TRANSMITTER_INJECTIVE;
         } else if (block.chainid == CHAIN_INJECTIVE_TESTNET) {
             usdc = USDC_INJECTIVE_TESTNET;
             paymentContract = PAYMENT_CONTRACT_INJECTIVE_TESTNET;
-            operator = OPERATOR_INJECTIVE_TESTNET;
             transmitter = TRANSMITTER_INJECTIVE_TESTNET;
         } else {
             revert("Chain not supported.");
         }
+    }
+
+    /// @dev Which of the two deployments on this chain to target. REQUIRED — there is deliberately no default:
+    ///      PROD and DEV differ only in the operator key, so a wrong guess produces a config that looks entirely
+    ///      correct while binding the wrong key.
+    ///
+    ///      ⚠️ `virtual`, and it MUST stay free of derived state: it is called from this constructor, so an
+    ///      override may only return a compile-time constant or read the environment. Tests override it with a
+    ///      constant instead of using vm.setEnv, which writes the real process environment that forge shares
+    ///      across the test contracts it runs in parallel.
+    function _isDevEnv() internal view virtual returns (bool) {
+        return _parseEnv(vm.envOr("DEPLOY_ENV", string("")));
+    }
+
+    /// @dev Split out and `pure` so the accept/reject rules are testable without touching the process environment.
+    function _parseEnv(string memory env) internal pure returns (bool dev) {
+        bytes32 h = keccak256(bytes(env));
+        if (h == keccak256(bytes("dev"))) return true;
+        if (h == keccak256(bytes("prod"))) return false;
+        revert("DEPLOY_ENV is required and must be 'prod' or 'dev' - it selects the operator key");
     }
 
     /// @dev Deploy a new OutboundForwarder beacon impl from USDC/PAYMENT_CONTRACT/OPERATOR.

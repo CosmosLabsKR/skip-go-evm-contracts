@@ -36,14 +36,17 @@ CHAINS=(
 IMPL_SLOT=0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc
 
 # ── args ────────────────────────────────────────────────────────────────────
-TARGET="${FACTORY_PROXY:-}"; CHAIN=""; RPC_OVERRIDE=""; JSON=0
+TARGET="${FACTORY_PROXY:-}"; CHAIN=""; RPC_OVERRIDE=""; JSON=0; ENVIRONMENT=""
 
 usage() {
   cat <<EOF
-Usage: script/inspect.sh <factory-proxy-address> --chain <name> [--rpc-url <url>] [--json]
+Usage: script/inspect.sh <factory-proxy-address> --chain <name> --env <prod|dev> [--rpc-url <url>] [--json]
 
   <factory-proxy>  the Inbound/OutboundForwarderFactory proxy. Falls back to \$FACTORY_PROXY.
   --chain          one of the names below
+  --env            REQUIRED. prod or dev — EVERY chain hosts both, and they differ only in \`operator\`.
+                   No default: the two resolve identically apart from that one key, so a guess would grade the
+                   wrong deployment while every other field still looked correct.
   --rpc-url        use this RPC instead of the table's (still checked against the chain id)
   --json           emit one JSON object instead of the human-readable block
 
@@ -55,6 +58,7 @@ EOF
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --chain)   CHAIN="${2:-}"; shift 2 ;;
+    --env)     ENVIRONMENT="${2:-}"; shift 2 ;;
     --rpc-url) RPC_OVERRIDE="${2:-}"; shift 2 ;;
     --json)    JSON=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -65,6 +69,13 @@ done
 
 [[ -n "$TARGET" ]] || { echo "error: factory proxy address is required" >&2; usage >&2; exit 1; }
 [[ -n "$CHAIN"  ]] || { echo "error: --chain is required" >&2; usage >&2; exit 1; }
+[[ -n "$ENVIRONMENT" ]] || {
+  echo "error: --env is required (prod | dev)" >&2
+  echo "       Every chain hosts BOTH deployments and they differ only in 'operator', so there is no safe" >&2
+  echo "       default — guessing would grade the wrong one while every other field still looked correct." >&2
+  usage >&2; exit 1; }
+[[ "$ENVIRONMENT" == "prod" || "$ENVIRONMENT" == "dev" ]] || {
+  echo "error: --env must be 'prod' or 'dev' (got '$ENVIRONMENT')" >&2; exit 1; }
 
 RPC=""; WANT_ID=""; SUFFIX=""
 for e in "${CHAINS[@]}"; do
@@ -151,8 +162,18 @@ PORT="$(cast call "$IMPL" 'PORT()(string)' --rpc-url "$RPC" 2>/dev/null | tr -d 
 config_addr() {
   grep -oE "^address constant $1_$SUFFIX = 0x[0-9a-fA-F]{40}" script/Config.sol | grep -oE '0x[0-9a-fA-F]{40}' || true
 }
+# ⚠️ The operator is the ONE value keyed by ENVIRONMENT rather than by chain — the same key drives every chain of
+#    an environment, so there are exactly two constants and the chain suffix plays no part. Every chain hosts both
+#    deployments; resolving without --env would grade a correct DEV deployment against the PROD key.
+#
+#    Plain `tr`, not ${VAR^^}: that is bash 4+, and macOS still ships bash 3.2 — where it expands to nothing
+#    rather than failing, leaving the expectation EMPTY. verdict() reads an empty expectation as
+#    "(no Config value)", which is not a failure, so the operator would go ungraded while the script exited 0.
+OPERATOR_CONST="OPERATOR_$(printf '%s' "$ENVIRONMENT" | tr '[:lower:]' '[:upper:]')"
 EXP_USDC="$(config_addr USDC)"
-EXP_OPERATOR="$(config_addr OPERATOR)"
+EXP_OPERATOR="$(grep -oE "^address constant $OPERATOR_CONST = 0x[0-9a-fA-F]{40}" script/Config.sol | grep -oE '0x[0-9a-fA-F]{40}' || true)"
+[[ -n "$EXP_OPERATOR" ]] || {
+  echo "error: $OPERATOR_CONST not found in script/Config.sol - cannot grade the operator" >&2; exit 1; }
 EXP_TRANSMITTER="$(config_addr TRANSMITTER)"
 EXP_PAYMENT="$(config_addr PAYMENT_CONTRACT)"
 # The domain identifies the chain, so it is shared by mainnet and testnet (no suffix).
@@ -200,6 +221,7 @@ if [[ $JSON -eq 1 ]]; then
   cat <<EOF
 {
   "chain": "$CHAIN",
+  "env": "$ENVIRONMENT",
   "chainId": $GOT_ID,
   "kind": "$KIND",
   "factory": {
@@ -241,7 +263,7 @@ if [[ $JSON -eq 1 ]]; then
 EOF
 else
   echo "=========================================================="
-  echo " $CHAIN (chain id $GOT_ID, verified) - $KIND"
+  echo " $CHAIN [$ENVIRONMENT] (chain id $GOT_ID, verified) - $KIND"
   echo "=========================================================="
   echo " factory (proxy)"
   printf "   address        = %s\n" "$TARGET"

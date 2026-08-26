@@ -19,7 +19,7 @@ pragma solidity >=0.8.0 <0.9.0;
 //
 //   chain ids, USDC   CCTPRelayer/script/Config.sol AND CCTPV2Relayer/script/Config.sol (both agree)
 //   TRANSMITTER_*     CCTPRelayer/script/Config.sol ONLY — that is the v1 project
-//   OPERATOR_*        ForwarderFactory/script/Config.sol (the same keys, deliberately reused)
+//   OPERATOR_PROD/DEV ForwarderFactory/script/Config.sol (the same two keys, deliberately reused)
 //
 // ⚠️ THE TRANSMITTER ROW IS THE ONE THAT MATTERS, AND ITS TEST IS TWO-SIDED. A correct value MATCHES CCTPRelayer's
 //    (v1) and DIFFERS from CCTPV2Relayer's (v2). Matching the v2 project would mean the mint leg had been pointed
@@ -60,9 +60,6 @@ uint256 constant CHAIN_AVALANCHE = 43114;
 // Corroborated by BOTH CCTPRelayer and CCTPV2Relayer Config (USDC_AVALANCHE).
 address constant USDC_AVALANCHE = 0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E;
 
-// Relayer/Operator address — reused from the Injective operator (same key, different chain).
-address constant OPERATOR_AVALANCHE = 0xfc05aD74C6FE2e7046E091D6Ad4F660D2A159762;
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Avalanche Fuji (Testnet)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -73,9 +70,6 @@ uint256 constant CHAIN_AVALANCHE_TESTNET = 43113;
 // USDC address (Fuji USDC). Corroborated by both sibling Configs (USDC_AVALANCHE_FUJI there — this file spells
 // every testnet *_TESTNET, so the names differ while the value must not).
 address constant USDC_AVALANCHE_TESTNET = 0x5425890298aed601595a70AB815c96711a31Bc65;
-
-// Relayer/Operator address — reused from the Injective testnet operator (same key, different chain).
-address constant OPERATOR_AVALANCHE_TESTNET = 0x257cac9aa58c17E09074d7089CA878167611fc00;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Polygon PoS (Mainnet)
@@ -92,9 +86,6 @@ uint256 constant CHAIN_POLYGON = 137;
 //    no token, so the two sibling Configs above are now the ONLY corroboration. Do not weaken them.
 address constant USDC_POLYGON = 0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359;
 
-// Relayer/Operator address — the same key as Avalanche's (a key is chain-agnostic; the deployments are not).
-address constant OPERATOR_POLYGON = 0xfc05aD74C6FE2e7046E091D6Ad4F660D2A159762;
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Polygon Amoy (Testnet)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -107,9 +98,6 @@ uint256 constant CHAIN_POLYGON_TESTNET = 80002;
 // Corroborated by CCTPV2Relayer Config (USDC_POLYGON_AMOY). NOT by CCTPRelayer — it predates Amoy and carries
 // Mumbai's USDC_POLYGON_MUMBAI (0x9999f7Fe...) instead, which is a different token on a dead network.
 address constant USDC_POLYGON_TESTNET = 0x41E94Eb019C0762f9Bfcf9Fb1E58725BfB0e7582;
-
-// Relayer/Operator address — the same testnet key as Fuji's.
-address constant OPERATOR_POLYGON_TESTNET = 0x257cac9aa58c17E09074d7089CA878167611fc00;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Mint leg — CCTP v1 MessageTransmitter
@@ -161,6 +149,33 @@ address constant TRANSMITTER_POLYGON_TESTNET = 0x7865fAfC2db2093669d92c0F33AeEF2
 // chain-specific constant directly, or it silently hard-codes one chain again.
 uint32 constant AVALANCHE_CCTP_DOMAIN = 1;
 uint32 constant POLYGON_CCTP_DOMAIN = 7;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// OPERATOR — keyed by ENVIRONMENT only, never by chain
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Every other constant in this file is keyed by chain. The operator is the exception and the ONLY one: it is a
+// key, and the same key drives every chain of a given environment. So there are exactly two values here, not one
+// per chain — and adding a chain must never add a third.
+//
+// Both environments exist on EVERY supported chain, mainnet and testnet alike. `BaseScript` selects between them
+// with `DEPLOY_ENV`; `inspect.sh` with `--env`.
+//
+// ⚠️ DEPLOY_ENV / --env is REQUIRED, with no default. A default would silently pick one deployment while the
+//    operator meant the other, and the two sit on the SAME chain behind different addresses — nothing else in the
+//    resolved config would look wrong, because everything else is chain-derived and therefore identical. Failing
+//    with "which environment?" is the only honest behaviour.
+//
+// ⚠️ MODELLING THIS IS NOT COSMETIC. Without the axis the guards grade a perfectly correct DEV deployment against
+//    the PROD key and report `DRIFT operator` every single run. A guard that always fails on a legitimate
+//    configuration teaches operators to reach for ALLOW_IMMUTABLE_REBIND as routine — and that flag also waives
+//    the `executor` check, which is the one guarding an unrecoverable cross-chain misbinding
+//    (see BaseScript._settleDrift). The axis exists so the drift guard only ever fires on a real problem.
+//
+// VERIFIED ON-CHAIN (2026-08-26): PROD on Avalanche 43114 and Polygon 137; DEV on those two plus Fuji 43113 and
+// Amoy 80002. Every deployment of an environment answers that environment's key, on every chain.
+address constant OPERATOR_PROD = 0xfc05aD74C6FE2e7046E091D6Ad4F660D2A159762;
+address constant OPERATOR_DEV = 0x257cac9aa58c17E09074d7089CA878167611fc00;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Burn leg — CCTP v2 TokenMessenger (called directly; NO relayer, NO fee)
