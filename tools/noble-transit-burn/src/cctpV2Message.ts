@@ -1,7 +1,7 @@
 import { slice, type Hex } from "viem";
 
 /**
- * Read-only parser for a CCTP **v2** message — the format the Avalanche → Injective hop emits.
+ * Read-only parser for a CCTP **v2** message — the format the transit chain → Injective hop emits.
  *
  * This is a different layout from `cctpMessage.ts`, which parses the **v1** mint leg. The two share no offsets:
  * v2 widens `nonce` from 8 bytes to 32 and appends two finality fields to the header, so every field after byte 12
@@ -48,7 +48,7 @@ export function parseCctpV2Message(message: Hex): ParsedV2Message {
   if (byteLength < MIN_LENGTH) {
     throw new Error(
       `message is ${byteLength} bytes, too short for a CCTP v2 burn message (${MIN_LENGTH}). ` +
-        `A 248-byte message is CCTP v1 — that is the Noble → Avalanche leg, handled by \`execute\`.`,
+        `A 248-byte message is CCTP v1 — that is the Noble → transit-chain leg, handled by \`execute\`.`,
     );
   }
 

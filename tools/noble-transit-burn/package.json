@@ -2,9 +2,10 @@
   "name": "noble-transit-burn",
   "version": "0.1.0",
   "private": true,
-  "description": "Builds (and optionally broadcasts) the Noble CCTP v1 depositForBurnWithCaller that feeds a TransitForwarder on Avalanche.",
+  "description": "Drives a Noble -> Avalanche|Polygon -> Injective CCTP transit: the Noble burn, the TransitExecutor hop, and the Injective mint.",
   "type": "module",
   "scripts": {
+    "check": "tsx src/index.ts check",
     "burn": "tsx src/index.ts burn",
     "execute": "tsx src/index.ts execute",
     "mint": "tsx src/index.ts mint",

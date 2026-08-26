@@ -4,6 +4,7 @@ import { GasPrice, SigningStargateClient, defaultRegistryTypes } from "@cosmjs/s
 import { fromHex, toBase64 } from "@cosmjs/encoding";
 import { formatUnits, pad } from "viem";
 
+import { COMMON_HELP, takeCommonArgs } from "./args.js";
 import { loadConfig, requireAmount, type Config } from "./config.js";
 import { predictForwarder, type Prediction } from "./predict.js";
 import { MSG_DEPOSIT_FOR_BURN_WITH_CALLER, MsgDepositForBurnWithCaller, decodeBurnNonce } from "./proto.js";
@@ -60,7 +61,7 @@ function parseUsdc(v: string): bigint {
 
 export function printBurnHelp(): void {
   console.log(`
-burn — build the Noble CCTP v1 burn that feeds a TransitForwarder on Avalanche
+burn — build the Noble CCTP v1 burn that feeds a TransitForwarder on the transit chain
 
   npm run burn -- --usdc 1.5              build and print the tx (writes tx.json), no broadcast
   npm run burn -- --amount 1500000        same, amount in uusdc
@@ -72,8 +73,9 @@ Options
   --from <noble1..>  sender, when no NOBLE_PK is set (build-only mode)
   --broadcast        actually sign and send (requires NOBLE_PK)
   --out <path>       where to write the unsigned tx JSON (default: tx.json)
+${COMMON_HELP}
 
-Configuration lives in .env — see .env.example.
+Configuration lives in .env — see .env.example. Any of it can be overridden per run with the flags above.
 `);
 }
 
@@ -102,22 +104,23 @@ Route (hop 2 — engraved in the forwarder's address)
   destinationDomain  ${cfg.routeDomain}
   mintRecipient      ${cfg.routeMintRecipient}
 
-Transit forwarder (Avalanche, CCTP domain ${cfg.avalancheDomain})
+Transit forwarder (${cfg.chain.label}, CCTP domain ${cfg.transitDomain}${cfg.deployEnv ? `, ${cfg.deployEnv.toUpperCase()}` : ""})
   predicted address  ${p.forwarder}
   already deployed   ${p.deployed ? "yes" : "no — the executor will create it on this message"}
 
 Noble burn (hop 1)
   from               ${sender}
   amount             ${formatUnits(amount, 6)} USDC (${amount} ${cfg.burnToken})
-  destinationDomain  ${cfg.avalancheDomain}
+  destinationDomain  ${cfg.transitDomain}
   mintRecipient      ${p.mintRecipient}
   destinationCaller  ${cfg.executor} (TransitExecutor)
 `);
 }
 
 export async function runBurn(argv: string[]): Promise<void> {
-  const args = parseArgs(argv);
-  const cfg = loadConfig({ amount: args.amount });
+  const { overrides, rest } = takeCommonArgs(argv);
+  const args = parseArgs(rest);
+  const cfg = loadConfig({ amount: args.amount, overrides });
   const amount = requireAmount(cfg);
 
   const { address: sender, wallet } = await resolveSender(cfg, args);
@@ -128,7 +131,7 @@ export async function runBurn(argv: string[]): Promise<void> {
     value: MsgDepositForBurnWithCaller.fromPartial({
       from: sender,
       amount: amount.toString(),
-      destinationDomain: cfg.avalancheDomain,
+      destinationDomain: cfg.transitDomain,
       mintRecipient: bytes32(prediction.mintRecipient),
       burnToken: cfg.burnToken,
       // Pinning the executor as destinationCaller is what makes the transit atomic: nobody else can call

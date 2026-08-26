@@ -1,6 +1,5 @@
 import { readFileSync } from "node:fs";
 import {
-  createPublicClient,
   createWalletClient,
   formatUnits,
   http,
@@ -12,9 +11,11 @@ import {
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
+import { COMMON_HELP, asCount, takeCommonArgs } from "./args.js";
 import { waitForAttestation, type AttestedMessage } from "./attestation.js";
 import { parseCctpV1Message, toEvmAddress } from "./cctpMessage.js";
-import { loadConfig, requireExecuteParams, type Config, type ExecuteParams } from "./config.js";
+import { loadConfig, requireExecuteParams, requireRoute, type Config, type ExecuteParams } from "./config.js";
+import { evmClient } from "./deployment.js";
 import { predictForwarder, type Prediction } from "./predict.js";
 
 const EXECUTOR_ABI = [
@@ -28,7 +29,6 @@ const EXECUTOR_ABI = [
       { name: "routeSender", type: "address" },
       { name: "routeDestinationDomain", type: "uint32" },
       { name: "routeMintRecipient", type: "bytes32" },
-      { name: "feeAmount", type: "uint256" },
       { name: "maxFee", type: "uint256" },
       { name: "minFinalityThreshold", type: "uint32" },
       { name: "destinationCaller", type: "bytes32" },
@@ -48,7 +48,6 @@ const EXECUTOR_ABI = [
     ],
     outputs: [],
   },
-  { type: "function", name: "operator", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
 ] as const;
 
 interface Args {
@@ -65,7 +64,7 @@ interface Args {
 
 export function printExecuteHelp(): void {
   console.log(`
-execute — run the second hop: TransitExecutor.executeTransit on Avalanche
+execute — run the second hop: TransitExecutor.executeTransit on the transit chain
 
   npm run execute -- --tx <nobleTxHash>              fetch attestation, simulate, do not send
   npm run execute -- --tx <nobleTxHash> --send       ... and send it (requires EVM_PK = operator key)
@@ -85,7 +84,9 @@ Options
   --poll <seconds>        interval between attempts (default: 15)
   --index <n>             pick the nth CCTP message in the tx, if it carried several
 
-Fee parameters (FEE_AMOUNT, MAX_FEE, MIN_FINALITY_THRESHOLD, ONWARD_DESTINATION_CALLER) come from .env.
+${COMMON_HELP}
+
+There is no relayer fee: the forwarder charges nothing. MAX_FEE is Circle's own destination-side cap.
 `);
 }
 
@@ -112,7 +113,7 @@ function parseArgs(argv: string[]): Args {
         args.file = next();
         break;
       case "--index":
-        args.index = Number(next());
+        args.index = asCount("--index", next());
         break;
       case "--refund":
         args.refund = true;
@@ -121,10 +122,10 @@ function parseArgs(argv: string[]): Args {
         args.send = true;
         break;
       case "--wait":
-        args.waitSeconds = Number(next());
+        args.waitSeconds = asCount("--wait", next());
         break;
       case "--poll":
-        args.pollSeconds = Number(next());
+        args.pollSeconds = asCount("--poll", next());
         break;
       case "-h":
       case "--help":
@@ -202,8 +203,10 @@ function preflight(cfg: Config, p: Prediction, m: AttestedMessage, params: Execu
     throw new Error(`message sourceDomain is ${parsed.sourceDomain}, expected ${cfg.nobleDomain} (Noble)`);
   }
   // The forwarder rejects a mismatch with WrongDestination, having already paid for signature verification.
-  if (parsed.destinationDomain !== cfg.avalancheDomain) {
-    throw new Error(`message destinationDomain is ${parsed.destinationDomain}, expected ${cfg.avalancheDomain}`);
+  if (parsed.destinationDomain !== cfg.transitDomain) {
+    throw new Error(
+      `message destinationDomain is ${parsed.destinationDomain}, expected ${cfg.transitDomain} (${cfg.chain.label})`,
+    );
   }
 
   const recipient = toEvmAddress(parsed.mintRecipient);
@@ -217,51 +220,44 @@ function preflight(cfg: Config, p: Prediction, m: AttestedMessage, params: Execu
     throw new Error(`message pins destinationCaller ${caller}, not the executor ${cfg.executor}`);
   }
 
-  if (params) {
-    // Mirrors TransitForwarder._split: the fee comes out of the minted amount, and CCTP v2 wants maxFee strictly
-    // below what is actually transferred.
-    if (params.feeAmount >= parsed.amount) {
-      throw new Error(
-        `FEE_AMOUNT ${params.feeAmount} >= minted amount ${parsed.amount} (FeeExceedsMinted). ` +
-          `Use --refund to return the funds to ROUTE_SENDER instead.`,
-      );
-    }
-    const transferAmount = parsed.amount - params.feeAmount;
-    if (params.maxFee >= transferAmount) {
-      throw new Error(`MAX_FEE ${params.maxFee} must be strictly below the transfer amount ${transferAmount}`);
-    }
+  // The whole minted amount goes onward — v2 takes no relayer fee — so CCTP v2's own cap is bounded against the
+  // minted amount itself, which is what TransitForwarder checks (MaxFeeTooHigh).
+  if (params && params.maxFee >= parsed.amount) {
+    throw new Error(
+      `MAX_FEE ${params.maxFee} must be strictly below the minted amount ${parsed.amount} (InvalidMaxFee). ` +
+        `Use --refund to return the funds to ROUTE_SENDER instead.`,
+    );
   }
 
   return parsed.amount;
 }
 
 export async function runExecute(argv: string[]): Promise<void> {
-  const args = parseArgs(argv);
-  const cfg = loadConfig();
+  const { overrides, rest } = takeCommonArgs(argv);
+  const args = parseArgs(rest);
+  const cfg = loadConfig({ overrides });
   // Refund burns nothing onward, so it needs none of the fee/finality/caller parameters.
   const params = args.refund ? undefined : requireExecuteParams(cfg);
 
   const account = cfg.evmPrivateKey ? privateKeyToAccount(toHex(cfg.evmPrivateKey)) : undefined;
   if (args.send && !account) throw new Error("--send requires EVM_PK (the TransitExecutor operator key)");
 
-  const publicClient = createPublicClient({ transport: http(cfg.evmRpc) });
-  const prediction = await predictForwarder(cfg);
+  const publicClient = evmClient(cfg);
+  // Also asserts the chain id, the executor's version and its transmitter's domain against .env — see
+  // deployment.ts. On PROD the executor address alone cannot tell Avalanche and Polygon apart.
+  const prediction = await predictForwarder(cfg, publicClient);
 
   const attested = await resolveMessage(cfg, args, prediction.forwarder);
   const amount = preflight(cfg, prediction, attested, params);
 
   // NotOperator is the most common failure and the cheapest to catch: the operator is an impl immutable, so a
   // rotated executor changes it without any storage write to notice.
-  const operator = await publicClient.readContract({
-    address: cfg.executor,
-    abi: EXECUTOR_ABI,
-    functionName: "operator",
-  });
+  const operator = prediction.deployment.operator;
   if (account && operator.toLowerCase() !== account.address.toLowerCase()) {
     throw new Error(`EVM_PK is ${account.address} but the executor's operator is ${operator} (NotOperator)`);
   }
 
-  const route = [cfg.routeSender, cfg.routeDomain, cfg.routeMintRecipient] as const;
+  const route = [cfg.routeSender, cfg.routeDomain, requireRoute(cfg)] as const;
   const call = params
     ? ({
         functionName: "executeTransit",
@@ -269,7 +265,6 @@ export async function runExecute(argv: string[]): Promise<void> {
           attested.message,
           attested.attestation,
           ...route,
-          params.feeAmount,
           params.maxFee,
           params.minFinalityThreshold,
           params.onwardDestinationCaller,
@@ -279,20 +274,20 @@ export async function runExecute(argv: string[]): Promise<void> {
 
   console.log(`
 Message
-  source domain      ${cfg.nobleDomain} (Noble)  →  ${cfg.avalancheDomain} (Avalanche)
+  source domain      ${cfg.nobleDomain} (Noble)  →  ${cfg.transitDomain} (${cfg.chain.label})
   minted amount      ${formatUnits(amount, 6)} USDC (${amount})
   mints to           ${prediction.forwarder} ${prediction.deployed ? "" : "(created by this call)"}
 
 Call
-  executor           ${cfg.executor}
+  chain              ${cfg.chain.label} (id ${prediction.deployment.chainId})${cfg.deployEnv ? `, ${cfg.deployEnv.toUpperCase()}` : ""}
+  executor           ${cfg.executor} (v${prediction.deployment.executorVersion})
   function           ${call.functionName}
   operator           ${operator}${account ? (account.address === operator ? " (EVM_PK ✓)" : "") : " — no EVM_PK set"}
-  route              ${cfg.routeSender} / domain ${cfg.routeDomain} / ${cfg.routeMintRecipient}${
+  route              ${cfg.routeSender} / domain ${cfg.routeDomain} / ${route[2]}${
     params
       ? `
-  feeAmount          ${formatUnits(params.feeAmount, 6)} USDC (${params.feeAmount})
-  transfer amount    ${formatUnits(amount - params.feeAmount, 6)} USDC
-  maxFee             ${params.maxFee}
+  onward amount      ${formatUnits(amount, 6)} USDC (no relayer fee)
+  maxFee             ${params.maxFee} (Circle's cap, paid on Injective)
   finality           ${params.minFinalityThreshold} (${params.minFinalityThreshold === 1000 ? "fast" : "standard"})
   destinationCaller  ${params.onwardDestinationCaller}`
       : `
@@ -333,8 +328,8 @@ Call
 
   console.log(
     params
-      ? `\ntransit complete on Avalanche. The forwarder re-burned toward domain ${cfg.routeDomain}; ` +
-          `track that hop with Circle's attestation API for source domain ${cfg.avalancheDomain}.`
+      ? `\ntransit complete on ${cfg.chain.label}. The forwarder re-burned toward domain ${cfg.routeDomain}; ` +
+          `track that hop with Circle's attestation API for source domain ${cfg.transitDomain}.`
       : `\nrefund complete — the minted USDC went back to ${cfg.routeSender}.`,
   );
 }

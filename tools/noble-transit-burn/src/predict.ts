@@ -1,5 +1,7 @@
-import { createPublicClient, http, pad, type Address, type Hex } from "viem";
-import type { Config } from "./config.js";
+import { pad, type Address, type Hex, type PublicClient } from "viem";
+
+import { requireRoute, type Config } from "./config.js";
+import { assertDeployment, evmClient, inspectDeployment, type DeploymentInfo } from "./deployment.js";
 
 /**
  * The forwarder address must come from the factory, not from a local CREATE2 re-derivation.
@@ -33,35 +35,34 @@ const FACTORY_ABI = [
   },
 ] as const;
 
-const EXECUTOR_ABI = [
-  { type: "function", name: "factory", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
-] as const;
-
 export interface Prediction {
   forwarder: Address;
   deployed: boolean;
   /** The forwarder address as CCTP's 32-byte, left-padded mintRecipient. */
   mintRecipient: Hex;
+  /** What the executor turned out to be — chain, version and wiring, already checked against the config. */
+  deployment: DeploymentInfo;
 }
 
-export async function predictForwarder(cfg: Config): Promise<Prediction> {
-  const client = createPublicClient({ transport: http(cfg.evmRpc) });
-  const route = [cfg.routeSender, cfg.routeDomain, cfg.routeMintRecipient] as const;
+/**
+ * @param known A deployment already inspected by the caller. Passing it skips a second round of ~13 reads against
+ *              what are usually public, rate-limited RPCs; the checks still run, on the same data.
+ */
+export async function predictForwarder(
+  cfg: Config,
+  client: PublicClient = evmClient(cfg),
+  known?: DeploymentInfo,
+): Promise<Prediction> {
+  // Identity first: predicting an address on the wrong chain, or off a superseded executor, produces a plausible
+  // answer that the transit can never resolve.
+  const deployment = known ?? (await inspectDeployment(cfg, client));
+  assertDeployment(cfg, deployment);
 
-  const [forwarder, deployed, executorFactory] = await Promise.all([
+  const route = [cfg.routeSender, cfg.routeDomain, requireRoute(cfg)] as const;
+  const [forwarder, deployed] = await Promise.all([
     client.readContract({ address: cfg.factory, abi: FACTORY_ABI, functionName: "getForwarderAddress", args: route }),
     client.readContract({ address: cfg.factory, abi: FACTORY_ABI, functionName: "isForwarderDeployed", args: route }),
-    client.readContract({ address: cfg.executor, abi: EXECUTOR_ABI, functionName: "factory" }),
   ]);
 
-  // The executor creates a missing forwarder through ITS OWN factory and rejects anything that factory does not
-  // predict (RouteMismatch). Predicting against a different factory would produce an address the transit can never
-  // resolve, so catch the mismatch here rather than after the funds are burned.
-  if (executorFactory.toLowerCase() !== cfg.factory.toLowerCase()) {
-    throw new Error(
-      `factory mismatch: TRANSIT_FACTORY is ${cfg.factory} but the executor at ${cfg.executor} uses ${executorFactory}`,
-    );
-  }
-
-  return { forwarder, deployed, mintRecipient: pad(forwarder, { size: 32 }) };
+  return { forwarder, deployed, mintRecipient: pad(forwarder, { size: 32 }), deployment };
 }

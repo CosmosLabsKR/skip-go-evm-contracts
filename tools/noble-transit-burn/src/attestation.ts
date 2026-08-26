@@ -82,13 +82,13 @@ export async function waitForAttestation(
 }
 
 /**
- * The same thing for the **v2** API, which serves the Avalanche → Injective hop.
+ * The same thing for the **v2** API, which serves the transit chain → Injective hop.
  *
  *   GET /v2/messages/{sourceDomain}?transactionHash={txHash}
  *     → { messages: [ { message, attestation, eventNonce, cctpVersion, status: "complete" | "pending_confirmations" } ] }
  *
  * The two APIs are disjoint indexes, not two views of one: a v2 message is simply absent from /v1 and vice versa,
- * and both answer 404 for anything they do not hold. That 404 is why an Avalanche tx hash looks like "no such
+ * and both answer 404 for anything they do not hold. That 404 is why a transit-chain tx hash looks like "no such
  * transaction" rather than "wrong endpoint", so the error below names both coordinates that have to line up.
  */
 export async function waitForV2Attestation(
@@ -125,7 +125,7 @@ export async function waitForV2Attestation(
           ? `attestation for ${txHash} is still "${lastStatus}" after ${Math.round(opts.timeoutMs / 1000)}s — ` +
             `re-run later, nothing is lost.`
           : `Circle's v2 API has no message for ${txHash} on source domain ${sourceDomain}. ` +
-            `Check both: the hash must be the Avalanche tx that ran \`execute\` (not the Noble burn), and the ` +
+            `Check both: the hash must be the transit-chain tx that ran \`execute\` (not the Noble burn), and the ` +
             `domain must be the chain that tx ran on. See ${url}`,
       );
     }

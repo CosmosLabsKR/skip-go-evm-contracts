@@ -2,20 +2,21 @@ import { readFileSync } from "node:fs";
 import { createPublicClient, createWalletClient, formatUnits, http, isHex, toHex, type Address, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
+import { COMMON_HELP, asCount, takeCommonArgs } from "./args.js";
 import { waitForV2Attestation, type AttestedMessage } from "./attestation.js";
 import { parseCctpV2Message, type ParsedV2Message } from "./cctpV2Message.js";
-import { loadConfig, type Config } from "./config.js";
+import { loadConfig, requireRoute, type Config } from "./config.js";
 import { toEvmAddress } from "./cctpMessage.js";
 
 /**
- * Hop 3: Avalanche → Injective.
+ * Hop 3: the transit chain → Injective.
  *
  * Injective's EVM runs the stock CCTP v2 contracts — MessageTransmitterV2 at Circle's usual address, reporting
  * localDomain() == 29 — so the last leg needs no contract of ours at all. It is `receiveMessage(message,
  * attestation)` called by whoever the onward burn pinned as destinationCaller, and the USDC mints to the
- * mintRecipient the forwarder committed to on Avalanche.
+ * mintRecipient the forwarder committed to on the transit chain.
  *
- * Neither field can be changed after the fact: they were burned into the message on the Avalanche hop. So every
+ * Neither field can be changed after the fact: they were burned into the message on the transit-chain hop. So every
  * check here is a read of what the message already says, never a choice — the only question this command can
  * actually answer is whether the caller is allowed to submit it.
  */
@@ -85,12 +86,12 @@ export function printMintHelp(): void {
   console.log(`
 mint — run the third hop: MessageTransmitterV2.receiveMessage on Injective
 
-  npm run mint -- --tx <avalancheTxHash>             fetch attestation, simulate, do not send
+  npm run mint -- --tx <transitTxHash>               fetch attestation, simulate, do not send
   npm run mint -- --tx <hash> --wait 900 --send      poll for the attestation, then submit
   npm run mint -- --message 0x.. --attestation 0x..  submit bytes you already have
 
 Message source (pick one)
-  --tx <hash>             the Avalanche tx that ran \`execute\`; message + attestation come from Circle's v2 API
+  --tx <hash>             the transit-chain tx that ran \`execute\`; message + attestation from Circle's v2 API
   --message <0x..>        raw message bytes, with --attestation
   --attestation <0x..>    raw attestation bytes, with --message
   --file <path>           JSON holding { message, attestation }
@@ -99,8 +100,10 @@ Options
   --send                  actually broadcast (default: simulate only)
   --wait <seconds>        how long to poll for the attestation (default: 0, one attempt)
   --poll <seconds>        interval between attempts (default: 15)
-  --source <domain>       source domain of the tx (default: AVALANCHE_DOMAIN)
+  --source <domain>       source domain of the tx (default: the TRANSIT_CHAIN domain — 1 avalanche, 7 polygon)
   --index <n>             pick the nth CCTP message in the tx, if it carried several
+
+${COMMON_HELP}
 
 The signing key is INJECTIVE_PK, falling back to EVM_PK. It has to be the destinationCaller the onward burn
 pinned (ONWARD_DESTINATION_CALLER at the time \`execute\` ran) — nobody else can submit the message.
@@ -130,19 +133,19 @@ function parseArgs(argv: string[]): Args {
         args.file = next();
         break;
       case "--index":
-        args.index = Number(next());
+        args.index = asCount("--index", next());
         break;
       case "--source":
-        args.sourceDomain = Number(next());
+        args.sourceDomain = asCount("--source", next());
         break;
       case "--send":
         args.send = true;
         break;
       case "--wait":
-        args.waitSeconds = Number(next());
+        args.waitSeconds = asCount("--wait", next());
         break;
       case "--poll":
-        args.pollSeconds = Number(next());
+        args.pollSeconds = asCount("--poll", next());
         break;
       case "-h":
       case "--help":
@@ -173,7 +176,7 @@ async function resolveMessage(cfg: Config, args: Args, sourceDomain: number): Pr
   }
 
   if (!args.txHash) {
-    throw new Error("no message source: pass --tx <avalancheTxHash>, --file, or --message/--attestation");
+    throw new Error("no message source: pass --tx <transitTxHash>, --file, or --message/--attestation");
   }
 
   const found = await waitForV2Attestation(cfg, args.txHash, sourceDomain, {
@@ -204,6 +207,7 @@ async function resolveMessage(cfg: Config, args: Args, sourceDomain: number): Pr
  * successfully — to someone else, permanently. That mismatch is a hard stop here rather than a warning.
  */
 function preflight(cfg: Config, parsed: ParsedV2Message, sourceDomain: number, localDomain: number, caller?: Address) {
+  const routeMintRecipient = requireRoute(cfg);
   if (parsed.version !== 1) {
     throw new Error(`message version is ${parsed.version}, expected 1 (CCTP v2)`);
   }
@@ -219,10 +223,10 @@ function preflight(cfg: Config, parsed: ParsedV2Message, sourceDomain: number, l
   if (parsed.destinationDomain !== cfg.routeDomain) {
     throw new Error(`message destinationDomain is ${parsed.destinationDomain}, but ROUTE_DOMAIN is ${cfg.routeDomain}`);
   }
-  if (parsed.mintRecipient.toLowerCase() !== cfg.routeMintRecipient.toLowerCase()) {
+  if (parsed.mintRecipient.toLowerCase() !== routeMintRecipient.toLowerCase()) {
     throw new Error(
       `message mints to ${parsed.mintRecipient}, not the configured ROUTE_MINT_RECIPIENT ` +
-        `${cfg.routeMintRecipient}. The recipient is fixed in the burned message and cannot be redirected.`,
+        `${routeMintRecipient}. The recipient is fixed in the burned message and cannot be redirected.`,
     );
   }
 
@@ -239,15 +243,25 @@ function preflight(cfg: Config, parsed: ParsedV2Message, sourceDomain: number, l
 }
 
 export async function runMint(argv: string[]): Promise<void> {
-  const args = parseArgs(argv);
-  const cfg = loadConfig();
-  const sourceDomain = args.sourceDomain ?? cfg.avalancheDomain;
+  const { overrides, rest } = takeCommonArgs(argv);
+  const args = parseArgs(rest);
+  const cfg = loadConfig({ overrides });
+  const sourceDomain = args.sourceDomain ?? cfg.transitDomain;
 
   // The operator key is the usual fallback: on a single-operator deployment the same EOA tends to be pinned as the
   // onward destinationCaller, and requiring it to be duplicated into a second variable buys nothing.
   const key = cfg.injectivePrivateKey ?? cfg.evmPrivateKey;
   const account = key ? privateKeyToAccount(toHex(key)) : undefined;
   if (args.send && !account) throw new Error("--send requires INJECTIVE_PK (or EVM_PK) for the destinationCaller");
+
+  // The one leg that does NOT follow the transit chain's network tier — and localDomain() cannot catch it, since
+  // Injective's testnet reports domain 29 just as its mainnet does.
+  if (cfg.chain.testnet && !process.env.INJECTIVE_RPC && !overrides.INJECTIVE_RPC) {
+    console.warn(
+      `warning: ${cfg.chain.label} is a testnet, but INJECTIVE_RPC is unset and defaults to MAINNET Injective ` +
+        `(${cfg.injectiveRpc}). Pass --injective-rpc <url> for the testnet endpoint.`,
+    );
+  }
 
   const publicClient = createPublicClient({ transport: http(cfg.injectiveRpc) });
   const transmitter = cfg.injectiveMessageTransmitter;
@@ -282,7 +296,7 @@ export async function runMint(argv: string[]): Promise<void> {
 
   console.log(`
 Message (CCTP v2)
-  domain             ${parsed.sourceDomain} (Avalanche)  →  ${parsed.destinationDomain} (Injective)
+  domain             ${parsed.sourceDomain} (${cfg.chain.label})  →  ${parsed.destinationDomain} (Injective)
   nonce              ${parsed.nonce}
   finality           ${parsed.minFinalityThreshold} requested / ${parsed.finalityThresholdExecuted} executed
 
