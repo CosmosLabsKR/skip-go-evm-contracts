@@ -9,13 +9,18 @@ import {BeaconProxy} from "openzeppelin-contracts/proxy/beacon/BeaconProxy.sol";
 
 import {TransitForwarder} from "../src/TransitForwarder.sol";
 import {TransitForwarderFactory} from "../src/TransitForwarderFactory.sol";
+<<<<<<< HEAD
 import {ICCTPV2Relayer} from "../src/interfaces/ICCTPV2Relayer.sol";
 import {IReceiver} from "../src/interfaces/IReceiver.sol";
+=======
+import {ITokenMessenger} from "../src/interfaces/ITokenMessenger.sol";
+>>>>>>> sungrak/cctp-v2-contracts
 
 contract MockUSDC is ERC20 {
     constructor() ERC20("USD Coin", "USDC") {}
 }
 
+<<<<<<< HEAD
 contract MockTransmitterStub is IReceiver {
     function receiveMessage(bytes calldata, bytes calldata) external pure returns (bool) {
         return true;
@@ -45,6 +50,16 @@ contract MockRelayerStub is ICCTPV2Relayer {
         bytes32,
         bytes calldata
     ) external pure {}
+=======
+/// @dev Inert TokenMessengerV2 stand-in. These suites never burn — they only need a typed, non-zero address to
+///      put in the forwarder's `messenger` immutable.
+contract MockMessengerStub is ITokenMessenger {
+    function depositForBurn(uint256, uint32, bytes32, address, bytes32, uint256, uint32) external pure {}
+
+    function depositForBurnWithHook(uint256, uint32, bytes32, address, bytes32, uint256, uint32, bytes calldata)
+        external
+        pure {}
+>>>>>>> sungrak/cctp-v2-contracts
 }
 
 /**
@@ -57,10 +72,16 @@ contract UpgradeTransitFactoryTest is Test {
 
     function setUp() public {
         MockUSDC usdc = new MockUSDC();
+<<<<<<< HEAD
         MockTransmitterStub transmitter = new MockTransmitterStub();
         MockRelayerStub relayer = new MockRelayerStub(usdc);
         TransitForwarder impl =
             new TransitForwarder(address(usdc), address(relayer), address(0xA11CE), address(0xE8EC00), 9, 29);
+=======
+        MockMessengerStub messengerStub = new MockMessengerStub();
+        TransitForwarder impl =
+            new TransitForwarder(address(usdc), address(messengerStub), address(0xA11CE), address(0xE8EC00), 9, 29);
+>>>>>>> sungrak/cctp-v2-contracts
 
         TransitForwarderFactory factoryImpl = new TransitForwarderFactory();
         factory = TransitForwarderFactory(

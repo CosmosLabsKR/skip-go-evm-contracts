@@ -15,7 +15,11 @@ contract UpgradeTransitFactoryScript is BaseScript {
         address beaconBefore = TransitForwarderFactory(factoryProxy).beacon();
 
         // Pre-flight, before any broadcast: refuse an upgrade that would permanently brick createForwarder.
+<<<<<<< HEAD
         _assertFactoryUpgradeKeepsAddressSpace(factoryProxy);
+=======
+        _assertFactoryUpgradeKeepsAddressSpace(factoryProxy, beaconBefore);
+>>>>>>> sungrak/cctp-v2-contracts
 
         vm.startBroadcast();
         TransitForwarderFactory newImpl = new TransitForwarderFactory();

@@ -11,8 +11,12 @@ import {TransitForwarder} from "../src/TransitForwarder.sol";
 import {TransitForwarderFactory} from "../src/TransitForwarderFactory.sol";
 import {ITransitForwarder} from "../src/interfaces/ITransitForwarder.sol";
 import {ITransitForwarderFactory} from "../src/interfaces/ITransitForwarderFactory.sol";
+<<<<<<< HEAD
 import {ICCTPV2Relayer} from "../src/interfaces/ICCTPV2Relayer.sol";
 import {IReceiver} from "../src/interfaces/IReceiver.sol";
+=======
+import {ITokenMessenger} from "../src/interfaces/ITokenMessenger.sol";
+>>>>>>> sungrak/cctp-v2-contracts
 
 // ── Minimal mocks (the factory suite only needs the constructor guards to be satisfiable) ──
 
@@ -20,6 +24,7 @@ contract MockUSDC is ERC20 {
     constructor() ERC20("USD Coin", "USDC") {}
 }
 
+<<<<<<< HEAD
 contract MockTransmitterStub is IReceiver {
     function receiveMessage(bytes calldata, bytes calldata) external pure returns (bool) {
         return true;
@@ -57,6 +62,28 @@ contract TransitForwarderV2 is TransitForwarder {
 
     function version() external pure override returns (uint256) {
         return 2;
+=======
+/// @dev Inert TokenMessengerV2 stand-in. These suites never burn — they only need a typed, non-zero address to
+///      put in the forwarder's `messenger` immutable.
+contract MockMessengerStub is ITokenMessenger {
+    function depositForBurn(uint256, uint32, bytes32, address, bytes32, uint256, uint32) external pure {}
+
+    function depositForBurnWithHook(uint256, uint32, bytes32, address, bytes32, uint256, uint32, bytes calldata)
+        external
+        pure {}
+}
+
+/// @dev Bumped `version()` used to prove a beacon/UUPS upgrade actually swapped logic. It is 3 because the real
+///      TransitForwarder is now at 2 (the fee removal) — this must stay strictly ahead of it to keep proving that
+///      the upgrade, and not the baseline, is what the deployed proxies observe.
+contract TransitForwarderV3 is TransitForwarder {
+    constructor(address u, address m, address o, address e, uint32 l, uint32 dst)
+        TransitForwarder(u, m, o, e, l, dst)
+    {}
+
+    function version() external pure override returns (uint256) {
+        return 3;
+>>>>>>> sungrak/cctp-v2-contracts
     }
 }
 
@@ -68,11 +95,18 @@ contract TransitForwarderFactoryV2 is TransitForwarderFactory {
 
 contract TransitForwarderFactoryTest is Test {
     MockUSDC usdc;
+<<<<<<< HEAD
     MockTransmitterStub transmitter;
     /// @dev The forwarder only stores this address and gates on it; the factory tests never call a transit entry
     ///      point, so a plain address stands in for the executor proxy here.
     address constant EXECUTOR = address(0xE8EC00);
     MockRelayerStub relayer;
+=======
+    /// @dev The forwarder only stores this address and gates on it; the factory tests never call a transit entry
+    ///      point, so a plain address stands in for the executor proxy here.
+    address constant EXECUTOR = address(0xE8EC00);
+    MockMessengerStub messengerStub;
+>>>>>>> sungrak/cctp-v2-contracts
     TransitForwarder impl;
     TransitForwarderFactory factory;
 
@@ -88,11 +122,17 @@ contract TransitForwarderFactoryTest is Test {
 
     function setUp() public {
         usdc = new MockUSDC();
+<<<<<<< HEAD
         transmitter = new MockTransmitterStub();
         relayer = new MockRelayerStub(usdc);
         impl = new TransitForwarder(
             address(usdc), address(relayer), operator, EXECUTOR, LOCAL_DOMAIN, DEST_DOMAIN
         );
+=======
+        messengerStub = new MockMessengerStub();
+        impl =
+            new TransitForwarder(address(usdc), address(messengerStub), operator, EXECUTOR, LOCAL_DOMAIN, DEST_DOMAIN);
+>>>>>>> sungrak/cctp-v2-contracts
 
         TransitForwarderFactory factoryImpl = new TransitForwarderFactory();
         factory = TransitForwarderFactory(
@@ -104,9 +144,21 @@ contract TransitForwarderFactoryTest is Test {
         );
     }
 
+<<<<<<< HEAD
     function _newImpl() internal returns (TransitForwarderV2) {
         return new TransitForwarderV2(
             address(usdc), address(relayer), operator, EXECUTOR, LOCAL_DOMAIN, DEST_DOMAIN
+=======
+    function _newImpl() internal returns (TransitForwarderV3) {
+        return
+            new TransitForwarderV3(address(usdc), address(messengerStub), operator, EXECUTOR, LOCAL_DOMAIN, DEST_DOMAIN);
+    }
+
+    /// @dev Same executor (so upgradeForwarderImplementation accepts it), different allowed destination.
+    function _newImplWithDestination(uint32 allowedDestination) internal returns (TransitForwarder) {
+        return new TransitForwarder(
+            address(usdc), address(messengerStub), operator, EXECUTOR, LOCAL_DOMAIN, allowedDestination
+>>>>>>> sungrak/cctp-v2-contracts
         );
     }
 
@@ -131,9 +183,13 @@ contract TransitForwarderFactoryTest is Test {
 
     function test_TF2_DuplicateCreateReverts() public {
         address deployed = factory.createForwarder(routeSender, DEST_DOMAIN, mintRecipient);
+<<<<<<< HEAD
         vm.expectRevert(
             abi.encodeWithSelector(ITransitForwarderFactory.ForwarderAlreadyDeployed.selector, deployed)
         );
+=======
+        vm.expectRevert(abi.encodeWithSelector(ITransitForwarderFactory.ForwarderAlreadyDeployed.selector, deployed));
+>>>>>>> sungrak/cctp-v2-contracts
         factory.createForwarder(routeSender, DEST_DOMAIN, mintRecipient);
     }
 
@@ -157,19 +213,105 @@ contract TransitForwarderFactoryTest is Test {
         factory.createForwarder(routeSender, DEST_DOMAIN, bytes32(0));
     }
 
+<<<<<<< HEAD
     // ── T-F5 a destination other than the allowed one bubbles up from the implementation ──
 
     function test_TF5_UnsupportedDestinationBubblesFromInitialize() public {
+=======
+    // ── T-F5 a destination other than the allowed one is refused ──
+
+    function test_TF5_UnsupportedDestinationIsRefused() public {
+>>>>>>> sungrak/cctp-v2-contracts
         // The local domain is just one instance of "not the allowed destination".
         vm.expectRevert(ITransitForwarder.UnsupportedDestination.selector);
         factory.createForwarder(routeSender, LOCAL_DOMAIN, mintRecipient);
 
         vm.expectRevert(ITransitForwarder.UnsupportedDestination.selector);
         factory.createForwarder(routeSender, DEST_DOMAIN + 1, mintRecipient);
+<<<<<<< HEAD
 
         // Addresses were predictable but not deployable — the probe must still report false afterwards.
         assertFalse(factory.isForwarderDeployed(routeSender, LOCAL_DOMAIN, mintRecipient));
         assertFalse(factory.isForwarderDeployed(routeSender, DEST_DOMAIN + 1, mintRecipient));
+=======
+    }
+
+    // ── T-F5b the READ path fails closed too — the guard that actually protects funds ──
+
+    /// @dev ⚠️ FUNDS-CRITICAL. A source-chain burner reads getForwarderAddress and burns to whatever it returns,
+    ///      before any forwarder exists. CREATE2 predicts an address for an undeployable route just as happily as for
+    ///      a real one, and nothing about it looks wrong — so if prediction answered, a mistyped destinationDomain
+    ///      would only surface AFTER the funds were burned, with no way back (executeTransit and executeRefund both
+    ///      need the forwarder created, and it never can be).
+    function test_TF5b_PredictionRefusesRoutesThatCanNeverBeCreated() public {
+        uint32[2] memory badDomains = [LOCAL_DOMAIN, DEST_DOMAIN + 1];
+
+        for (uint256 i; i < badDomains.length; ++i) {
+            vm.expectRevert(ITransitForwarder.UnsupportedDestination.selector);
+            factory.getForwarderAddress(routeSender, badDomains[i], mintRecipient);
+
+            // `false` here would read as "not yet, but you could" — the exact misunderstanding that burns funds.
+            vm.expectRevert(ITransitForwarder.UnsupportedDestination.selector);
+            factory.isForwarderDeployed(routeSender, badDomains[i], mintRecipient);
+        }
+
+        // The other two creation guards cover the read path as well.
+        vm.expectRevert(ITransitForwarderFactory.ZeroAddress.selector);
+        factory.getForwarderAddress(address(0), DEST_DOMAIN, mintRecipient);
+
+        vm.expectRevert(ITransitForwarderFactory.EmptyMintRecipient.selector);
+        factory.getForwarderAddress(routeSender, DEST_DOMAIN, bytes32(0));
+
+        vm.expectRevert(ITransitForwarderFactory.ZeroAddress.selector);
+        factory.isForwarderDeployed(address(0), DEST_DOMAIN, mintRecipient);
+
+        vm.expectRevert(ITransitForwarderFactory.EmptyMintRecipient.selector);
+        factory.isForwarderDeployed(routeSender, DEST_DOMAIN, bytes32(0));
+
+        // The allowed route still answers, so the guard rejects only what creation would reject.
+        assertTrue(factory.getForwarderAddress(routeSender, DEST_DOMAIN, mintRecipient) != address(0));
+        assertFalse(factory.isForwarderDeployed(routeSender, DEST_DOMAIN, mintRecipient));
+    }
+
+    /// @dev The guard reads ALLOWED_DESTINATION_DOMAIN off the beacon's CURRENT impl, so a beacon upgrade that moves
+    ///      it moves what NEW routes may be created — in step with what `initialize` will accept. The two cannot
+    ///      disagree. Scope matters: this governs undeployed routes only, see TF5d.
+    function test_TF5c_PredictionGuardFollowsTheBeaconImplementation() public {
+        vm.expectRevert(ITransitForwarder.UnsupportedDestination.selector);
+        factory.getForwarderAddress(routeSender, DEST_DOMAIN + 1, mintRecipient);
+
+        factory.upgradeForwarderImplementation(address(_newImplWithDestination(DEST_DOMAIN + 1)));
+
+        // The formerly-refused destination is now the allowed one...
+        assertTrue(factory.getForwarderAddress(routeSender, DEST_DOMAIN + 1, mintRecipient) != address(0));
+        // ...and a NEW route to the formerly-allowed one is refused.
+        vm.expectRevert(ITransitForwarder.UnsupportedDestination.selector);
+        factory.getForwarderAddress(address(0xC0DE), DEST_DOMAIN, mintRecipient);
+    }
+
+    /// @dev ⚠️ REGRESSION GUARD. The destination gate reads the beacon's CURRENT impl, but a DEPLOYED forwarder keeps
+    ///      its destination in proxy storage forever and goes on transiting regardless (test_T36). So the gate must
+    ///      never apply to a route that already exists: if it did, one legitimate allowance move would make every
+    ///      live, funded route unresolvable through this factory — indexers, ops tooling and the create script all
+    ///      lose the ability to look up an address that is still receiving money. Code at the predicted address is
+    ///      itself proof the route was creatable, which is the only thing this gate has anything to say about.
+    function test_TF5d_DeployedRoutesStayResolvableAfterAnAllowanceMove() public {
+        address fwd = factory.createForwarder(routeSender, DEST_DOMAIN, mintRecipient);
+
+        factory.upgradeForwarderImplementation(address(_newImplWithDestination(DEST_DOMAIN + 1)));
+
+        // The live forwarder is untouched — still deployed, still routing to its ORIGINAL destination.
+        (, uint32 storedDomain,) = TransitForwarder(payable(fwd)).getRoute();
+        assertEq(storedDomain, DEST_DOMAIN, "an existing route keeps its destination");
+
+        // ...so the factory must still resolve it, even though DEST_DOMAIN is no longer creatable.
+        assertEq(factory.getForwarderAddress(routeSender, DEST_DOMAIN, mintRecipient), fwd, "live route must resolve");
+        assertTrue(factory.isForwarderDeployed(routeSender, DEST_DOMAIN, mintRecipient), "and report as deployed");
+
+        // Creating a NEW route to that destination is still refused — the gate did not go soft.
+        vm.expectRevert(ITransitForwarder.UnsupportedDestination.selector);
+        factory.createForwarder(address(0xC0DE), DEST_DOMAIN, mintRecipient);
+>>>>>>> sungrak/cctp-v2-contracts
     }
 
     // ── T-F6 topic0 separation rests on the event NAME, not on parameter types ──
@@ -186,13 +328,21 @@ contract TransitForwarderFactoryTest is Test {
 
     function test_TF7_BeaconUpgradeKeepsAddressesSwapsLogic() public {
         address fwd = factory.createForwarder(routeSender, DEST_DOMAIN, mintRecipient);
+<<<<<<< HEAD
         assertEq(TransitForwarder(payable(fwd)).version(), 1);
+=======
+        assertEq(TransitForwarder(payable(fwd)).version(), 2);
+>>>>>>> sungrak/cctp-v2-contracts
 
         address beaconBefore = factory.beacon();
         factory.upgradeForwarderImplementation(address(_newImpl()));
 
         assertEq(factory.beacon(), beaconBefore, "beacon address must not change");
+<<<<<<< HEAD
         assertEq(TransitForwarder(payable(fwd)).version(), 2, "deployed forwarder must see new logic");
+=======
+        assertEq(TransitForwarder(payable(fwd)).version(), 3, "deployed forwarder must see new logic");
+>>>>>>> sungrak/cctp-v2-contracts
 
         // Route storage survives the logic swap.
         (address s, uint32 d, bytes32 r) = TransitForwarder(payable(fwd)).getRoute();
@@ -217,12 +367,22 @@ contract TransitForwarderFactoryTest is Test {
     function test_TF7b_ExecutorIsAdoptedAndFrozen() public {
         assertEq(factory.executor(), EXECUTOR, "adopted from the first implementation");
 
+<<<<<<< HEAD
         TransitForwarderV2 sameExecutor =
             new TransitForwarderV2(address(usdc), address(relayer), operator, EXECUTOR, LOCAL_DOMAIN, DEST_DOMAIN);
         factory.upgradeForwarderImplementation(address(sameExecutor)); // must not revert
 
         TransitForwarderV2 otherExecutor = new TransitForwarderV2(
             address(usdc), address(relayer), operator, address(0xBADE8EC), LOCAL_DOMAIN, DEST_DOMAIN
+=======
+        TransitForwarderV3 sameExecutor = new TransitForwarderV3(
+            address(usdc), address(messengerStub), operator, EXECUTOR, LOCAL_DOMAIN, DEST_DOMAIN
+        );
+        factory.upgradeForwarderImplementation(address(sameExecutor)); // must not revert
+
+        TransitForwarderV3 otherExecutor = new TransitForwarderV3(
+            address(usdc), address(messengerStub), operator, address(0xBADE8EC), LOCAL_DOMAIN, DEST_DOMAIN
+>>>>>>> sungrak/cctp-v2-contracts
         );
         vm.expectRevert(TransitForwarderFactory.ExecutorMismatch.selector);
         factory.upgradeForwarderImplementation(address(otherExecutor));
@@ -240,9 +400,13 @@ contract TransitForwarderFactoryTest is Test {
         assertEq(factory.version(), 2, "factory logic swapped");
         assertEq(factory.beacon(), beaconBefore, "beacon must survive the factory upgrade");
         assertEq(factory.beaconInitCodeHash(), hashBefore, "frozen initCodeHash must survive");
+<<<<<<< HEAD
         assertEq(
             factory.getForwarderAddress(routeSender, DEST_DOMAIN, mintRecipient), fwd, "prediction must be stable"
         );
+=======
+        assertEq(factory.getForwarderAddress(routeSender, DEST_DOMAIN, mintRecipient), fwd, "prediction must be stable");
+>>>>>>> sungrak/cctp-v2-contracts
 
         address other = address(0xFEED);
         assertEq(

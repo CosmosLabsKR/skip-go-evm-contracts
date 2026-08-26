@@ -11,6 +11,10 @@ import {ITransitExecutor} from "./interfaces/ITransitExecutor.sol";
 import {ITransitForwarder} from "./interfaces/ITransitForwarder.sol";
 import {ITransitForwarderFactory} from "./interfaces/ITransitForwarderFactory.sol";
 import {CCTPV1Message} from "./libraries/CCTPV1Message.sol";
+<<<<<<< HEAD
+=======
+import {TransitBurnParams} from "./libraries/TransitBurnParams.sol";
+>>>>>>> sungrak/cctp-v2-contracts
 
 /**
  * @title TransitExecutor
@@ -26,7 +30,11 @@ import {CCTPV1Message} from "./libraries/CCTPV1Message.sol";
  *      Scripts must reference the PROXY, never the implementation (BaseScript._assertIsProxy).
  *
  *      ⚠️ Version mix, fixed by construction: mint = CCTP v1 (`transmitter` below, parsed by CCTPV1Message),
+<<<<<<< HEAD
  *      burn = CCTP v2 (delegated by the forwarder to CCTPV2Relayer). Nothing sniffs the version at runtime.
+=======
+ *      burn = CCTP v2 (the forwarder calls Circle's TokenMessenger directly). Nothing sniffs the version at runtime.
+>>>>>>> sungrak/cctp-v2-contracts
  *
  *      ⚠️ SHORT-LIVED BY DESIGN — see the design document's §10 sunset procedure.
  */
@@ -91,8 +99,16 @@ contract TransitExecutor is ITransitExecutor, Initializable, UUPSUpgradeable, Ow
         }
     }
 
+<<<<<<< HEAD
     function version() external pure virtual returns (uint256) {
         return 1;
+=======
+    /// @dev v2: `feeAmount` was removed from executeTransit — this route takes no relayer fee. Must be upgraded
+    ///      together with the forwarder beacon: the two share TransitBurnParams and the transferMinted ABI, so a
+    ///      v1 executor cannot drive a v2 forwarder or vice versa.
+    function version() external pure virtual returns (uint256) {
+        return 2;
+>>>>>>> sungrak/cctp-v2-contracts
     }
 
     /// @notice Point the executor at the factory it creates missing forwarders with.
@@ -112,12 +128,16 @@ contract TransitExecutor is ITransitExecutor, Initializable, UUPSUpgradeable, Ow
         address routeSender,
         uint32 routeDestinationDomain,
         bytes32 routeMintRecipient,
+<<<<<<< HEAD
         uint256 feeAmount,
+=======
+>>>>>>> sungrak/cctp-v2-contracts
         uint256 maxFee,
         uint32 minFinalityThreshold,
         bytes32 destinationCaller
     ) external onlyOperator nonReentrant {
         if (destinationCaller == bytes32(0)) revert EmptyDestinationCaller();
+<<<<<<< HEAD
         _checkStaticParams(feeAmount, minFinalityThreshold);
         address forwarder = _ensureForwarder(message, routeSender, routeDestinationDomain, routeMintRecipient);
         uint256 minted = _receiveAndMeasure(message, attestation, forwarder);
@@ -129,6 +149,18 @@ contract TransitExecutor is ITransitExecutor, Initializable, UUPSUpgradeable, Ow
 
     /// @notice Mint and have the forwarder return everything to its `sender`, skipping the onward burn.
     /// @dev The exit when a message can be minted but not transited (e.g. the amount cannot cover a fee). Without
+=======
+        TransitBurnParams.check(minFinalityThreshold);
+        address forwarder = _ensureForwarder(message, routeSender, routeDestinationDomain, routeMintRecipient);
+        uint256 minted = _receiveAndMeasure(message, attestation, forwarder);
+
+        // maxFee is bounded against `minted` by the forwarder, which is the first place the amount is known.
+        ITransitForwarder(forwarder).transferMinted(message, minted, maxFee, minFinalityThreshold, destinationCaller);
+    }
+
+    /// @notice Mint and have the forwarder return everything to its `sender`, skipping the onward burn.
+    /// @dev The exit when a message can be minted but not transited (e.g. maxFee is not below the amount). Without
+>>>>>>> sungrak/cctp-v2-contracts
     ///      it such a message is unresolvable: the source chain has already burned and only a receiveMessage here
     ///      can redeem it. No _checkStaticParams and no destinationCaller — nothing is burned onward.
     function executeRefund(
@@ -146,6 +178,7 @@ contract TransitExecutor is ITransitExecutor, Initializable, UUPSUpgradeable, Ow
 
     // ── internal ──
 
+<<<<<<< HEAD
     /// @dev Checked before receiveMessage so a bad call does not burn the signature-verification gas. Purely a
     ///      failure-cost optimisation — the forwarder re-checks, and either way the whole transaction reverts.
     function _checkStaticParams(uint256 feeAmount, uint32 minFinalityThreshold) internal pure {
@@ -156,6 +189,8 @@ contract TransitExecutor is ITransitExecutor, Initializable, UUPSUpgradeable, Ow
         }
     }
 
+=======
+>>>>>>> sungrak/cctp-v2-contracts
     /// @dev Derived from the message alone, so an executor with no factory still serves already-deployed routes.
     ///      No length pre-check: an out-of-range slice reverts by itself.
     function _forwarderOf(bytes calldata message) internal pure returns (address forwarder) {
@@ -186,11 +221,19 @@ contract TransitExecutor is ITransitExecutor, Initializable, UUPSUpgradeable, Ow
                 revert RouteMismatch();
             }
             ITransitForwarderFactory(f).createForwarder(routeSender, routeDomain, routeRecipient);
+<<<<<<< HEAD
         }
 
         // Post-condition, not redundant: a void external call skips the extcodesize check, so code-less here would
         // let the next call "succeed" while the mint sits at an address nobody controls. See NotContract.
         if (forwarder.code.length == 0) revert NotContract();
+=======
+
+            // Post-condition of CREATION, not redundant: a void external call skips the extcodesize check, so
+            // code-less here would let the next call "succeed" while the mint sits at an address nobody controls.
+            if (forwarder.code.length == 0) revert NotContract();
+        }
+>>>>>>> sungrak/cctp-v2-contracts
     }
 
     /// @dev Snapshots the FORWARDER's balance — the mint goes straight there, never through this contract.

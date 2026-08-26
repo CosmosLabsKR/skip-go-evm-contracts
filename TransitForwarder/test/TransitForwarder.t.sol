@@ -12,7 +12,11 @@ import {TransitForwarderFactory} from "../src/TransitForwarderFactory.sol";
 import {TransitExecutor} from "../src/TransitExecutor.sol";
 import {ITransitForwarder} from "../src/interfaces/ITransitForwarder.sol";
 import {ITransitExecutor} from "../src/interfaces/ITransitExecutor.sol";
+<<<<<<< HEAD
 import {ICCTPV2Relayer} from "../src/interfaces/ICCTPV2Relayer.sol";
+=======
+import {ITokenMessenger} from "../src/interfaces/ITokenMessenger.sol";
+>>>>>>> sungrak/cctp-v2-contracts
 import {IReceiver} from "../src/interfaces/IReceiver.sol";
 
 // ── Mocks ──────────────────────────────────────────────────────────────────
@@ -27,7 +31,11 @@ contract MockUSDC is ERC20 {
     }
 }
 
+<<<<<<< HEAD
 /// @dev Simulates the CCTP v2 MessageTransmitter: parses the burn body (same offsets as the contract) and mints
+=======
+/// @dev Simulates the CCTP v1 MessageTransmitter: parses the burn body (same offsets as the contract) and mints
+>>>>>>> sungrak/cctp-v2-contracts
 ///      `amount` USDC to `mintRecipient`. Tracks nonce replay and supports a forced-failure flag.
 contract MockTransmitter is IReceiver {
     MockUSDC public immutable usdc;
@@ -54,6 +62,7 @@ contract MockTransmitter is IReceiver {
     }
 }
 
+<<<<<<< HEAD
 /// @dev PaymentContract mock that records CCTP v2 requestCCTPTransfer / requestCCTPTransferWithCaller and pulls USDC
 ///      via transferFrom.
 contract MockCCTPV2Relayer is ICCTPV2Relayer {
@@ -69,11 +78,28 @@ contract MockCCTPV2Relayer is ICCTPV2Relayer {
     bytes public lastHookData;
     bool public lastWasWithCaller;
     uint256 public callCount;
+=======
+/// @dev Circle TokenMessengerV2 mock: records the depositForBurn arguments and pulls USDC via transferFrom, the
+///      way the real messenger does. depositForBurnWithHook is implemented ONLY so an accidental switch to the hook
+///      variant is observable (hookCallCount) — the transit path must never take it.
+contract MockTokenMessenger is ITokenMessenger {
+    IERC20 public immutable usdc;
+    uint256 public lastAmount;
+    uint32 public lastDomain;
+    bytes32 public lastMintRecipient;
+    address public lastBurnToken;
+    bytes32 public lastDestinationCaller;
+    uint256 public lastMaxFee;
+    uint32 public lastMinFinality;
+    uint256 public callCount;
+    uint256 public hookCallCount;
+>>>>>>> sungrak/cctp-v2-contracts
 
     constructor(IERC20 _usdc) {
         usdc = _usdc;
     }
 
+<<<<<<< HEAD
     function requestCCTPTransfer(
         uint256 transferAmount,
         uint32 destinationDomain,
@@ -149,6 +175,34 @@ contract MockCCTPV2Relayer is ICCTPV2Relayer {
         lastWasWithCaller = withCaller;
         callCount++;
     }
+=======
+    function depositForBurn(
+        uint256 amount,
+        uint32 destinationDomain,
+        bytes32 mintRecipient,
+        address burnToken,
+        bytes32 destinationCaller,
+        uint256 maxFee,
+        uint32 minFinalityThreshold
+    ) external {
+        require(usdc.transferFrom(msg.sender, address(this), amount), "transferFrom failed");
+        lastAmount = amount;
+        lastDomain = destinationDomain;
+        lastMintRecipient = mintRecipient;
+        lastBurnToken = burnToken;
+        lastDestinationCaller = destinationCaller;
+        lastMaxFee = maxFee;
+        lastMinFinality = minFinalityThreshold;
+        callCount++;
+    }
+
+    function depositForBurnWithHook(uint256 amount, uint32, bytes32, address, bytes32, uint256, uint32, bytes calldata)
+        external
+    {
+        require(usdc.transferFrom(msg.sender, address(this), amount), "transferFrom failed");
+        hookCallCount++;
+    }
+>>>>>>> sungrak/cctp-v2-contracts
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -156,7 +210,11 @@ contract MockCCTPV2Relayer is ICCTPV2Relayer {
 contract TransitForwarderTest is Test {
     MockUSDC usdc;
     MockTransmitter transmitter;
+<<<<<<< HEAD
     MockCCTPV2Relayer relayer;
+=======
+    MockTokenMessenger messengerMock;
+>>>>>>> sungrak/cctp-v2-contracts
     TransitExecutor executor;
     TransitForwarder impl;
     TransitForwarderFactory factory;
@@ -173,7 +231,10 @@ contract TransitForwarderTest is Test {
     bytes32 mintRecipient = bytes32(uint256(uint160(address(0xD00D))));
 
     uint256 constant AMOUNT = 1_000_000; // 1 USDC (6dp)
+<<<<<<< HEAD
     uint256 constant FEE = 10_000;
+=======
+>>>>>>> sungrak/cctp-v2-contracts
     uint256 constant MAX_FEE = 500;
     uint32 constant FINALITY = 2000;
     /// @dev Non-zero on every path: the executor rejects an unset destinationCaller.
@@ -183,8 +244,11 @@ contract TransitForwarderTest is Test {
     event TransitCompleted(
         bytes32 indexed sourceNonce,
         uint256 minted,
+<<<<<<< HEAD
         uint256 transferAmount,
         uint256 feeAmount,
+=======
+>>>>>>> sungrak/cctp-v2-contracts
         uint256 maxFee,
         uint32 minFinalityThreshold,
         bytes32 destinationCaller
@@ -195,17 +259,33 @@ contract TransitForwarderTest is Test {
     function setUp() public {
         usdc = new MockUSDC();
         transmitter = new MockTransmitter(usdc);
+<<<<<<< HEAD
         relayer = new MockCCTPV2Relayer(usdc);
+=======
+        messengerMock = new MockTokenMessenger(usdc);
+>>>>>>> sungrak/cctp-v2-contracts
 
         // The executor is deployed FIRST and behind a proxy: the forwarder impl takes its address as an immutable,
         // and it must be the address that survives an executor upgrade. Mirrors the real deployment order.
         TransitExecutor executorImpl = new TransitExecutor(address(usdc), address(transmitter), operator);
         executor = TransitExecutor(
+<<<<<<< HEAD
             address(new ERC1967Proxy(address(executorImpl), abi.encodeCall(TransitExecutor.initialize, (address(this), address(0)))))
         );
 
         impl = new TransitForwarder(
             address(usdc), address(relayer), operator, address(executor), LOCAL_DOMAIN, DEST_DOMAIN
+=======
+            address(
+                new ERC1967Proxy(
+                    address(executorImpl), abi.encodeCall(TransitExecutor.initialize, (address(this), address(0)))
+                )
+            )
+        );
+
+        impl = new TransitForwarder(
+            address(usdc), address(messengerMock), operator, address(executor), LOCAL_DOMAIN, DEST_DOMAIN
+>>>>>>> sungrak/cctp-v2-contracts
         );
 
         TransitForwarderFactory factoryImpl = new TransitForwarderFactory();
@@ -215,7 +295,11 @@ contract TransitForwarderTest is Test {
         fwd = TransitForwarder(payable(factory.createForwarder(routeSender, DEST_DOMAIN, mintRecipient)));
     }
 
+<<<<<<< HEAD
     // ── message builder (CCTP v2 offsets) ──
+=======
+    // ── message builder (CCTP v1 offsets) ──
+>>>>>>> sungrak/cctp-v2-contracts
 
     /// @dev CCTP **v1** message layout (248 bytes, fixed). Header 116 + burn body 132 — no maxFee/feeExecuted/
     ///      expirationBlock/hookData, which v1 simply does not have.
@@ -262,15 +346,22 @@ contract TransitForwarderTest is Test {
         return bytes32(n);
     }
 
+<<<<<<< HEAD
     function _transit(bytes memory message, uint256 fee, uint256 maxFee, uint32 finality) internal {
         vm.prank(operator);
         executor.executeTransit(message, "att", routeSender, DEST_DOMAIN, mintRecipient, fee, maxFee, finality, DEST_CALLER);
+=======
+    function _transit(bytes memory message, uint256 maxFee, uint32 finality) internal {
+        vm.prank(operator);
+        executor.executeTransit(message, "att", routeSender, DEST_DOMAIN, mintRecipient, maxFee, finality, DEST_CALLER);
+>>>>>>> sungrak/cctp-v2-contracts
     }
 
     // ── T-01 정상 transit ──
 
     function test_T01_MintAndTransfer_Happy() public {
         bytes memory msg_ = _goodMessage(AMOUNT, _nonce(1));
+<<<<<<< HEAD
         _transit(msg_, FEE, MAX_FEE, FINALITY);
 
         assertEq(usdc.balanceOf(address(fwd)), 0, "forwarder must hold nothing after transit");
@@ -281,6 +372,17 @@ contract TransitForwarderTest is Test {
         assertEq(relayer.lastMinFinality(), FINALITY);
         assertEq(relayer.lastBurnToken(), address(usdc), "burnToken must be THIS chain's usdc");
         assertEq(usdc.balanceOf(address(relayer)), AMOUNT, "relayer pulled transferAmount + feeAmount");
+=======
+        _transit(msg_, MAX_FEE, FINALITY);
+
+        assertEq(usdc.balanceOf(address(fwd)), 0, "forwarder must hold nothing after transit");
+        assertEq(messengerMock.callCount(), 1, "messenger called once");
+        assertEq(messengerMock.lastAmount(), AMOUNT, "the WHOLE minted amount is burned - no fee is withheld");
+        assertEq(messengerMock.lastMaxFee(), MAX_FEE);
+        assertEq(messengerMock.lastMinFinality(), FINALITY);
+        assertEq(messengerMock.lastBurnToken(), address(usdc), "burnToken must be THIS chain's usdc");
+        assertEq(usdc.balanceOf(address(messengerMock)), AMOUNT, "messenger pulled exactly the minted amount");
+>>>>>>> sungrak/cctp-v2-contracts
     }
 
     // ── T-02 destinationCaller is always set ──
@@ -291,23 +393,48 @@ contract TransitForwarderTest is Test {
     function test_T02_OnwardBurnAlwaysRestrictsTheNextCaller() public {
         bytes32 destCaller = bytes32(uint256(uint160(address(0xCA11))));
         vm.prank(operator);
+<<<<<<< HEAD
         executor.executeTransit(_goodMessage(AMOUNT, _nonce(2)), "att", routeSender, DEST_DOMAIN, mintRecipient, FEE, MAX_FEE, FINALITY, destCaller);
 
         assertTrue(relayer.lastWasWithCaller(), "the onward burn must always restrict its caller");
         assertEq(relayer.lastDestinationCaller(), destCaller);
         assertEq(relayer.lastTransferAmount(), AMOUNT - FEE);
+=======
+        executor.executeTransit(
+            _goodMessage(AMOUNT, _nonce(2)),
+            "att",
+            routeSender,
+            DEST_DOMAIN,
+            mintRecipient,
+            MAX_FEE,
+            FINALITY,
+            destCaller
+        );
+
+        assertEq(messengerMock.lastDestinationCaller(), destCaller, "the onward burn must always restrict its caller");
+        assertEq(messengerMock.lastAmount(), AMOUNT);
+>>>>>>> sungrak/cctp-v2-contracts
     }
 
     // ── T-03 route comes from storage, not from the operator's arguments ──
 
     function test_T03_RouteFromStorageNotArguments() public {
+<<<<<<< HEAD
         _transit(_goodMessage(AMOUNT, _nonce(3)), FEE, MAX_FEE, FINALITY);
+=======
+        _transit(_goodMessage(AMOUNT, _nonce(3)), MAX_FEE, FINALITY);
+>>>>>>> sungrak/cctp-v2-contracts
         (address s, uint32 d, bytes32 r) = fwd.getRoute();
         assertEq(s, routeSender);
         assertEq(d, DEST_DOMAIN);
         assertEq(r, mintRecipient);
+<<<<<<< HEAD
         assertEq(relayer.lastDomain(), DEST_DOMAIN, "relayer got the stored domain");
         assertEq(relayer.lastMintRecipient(), mintRecipient, "relayer got the stored mintRecipient");
+=======
+        assertEq(messengerMock.lastDomain(), DEST_DOMAIN, "messenger got the stored domain");
+        assertEq(messengerMock.lastMintRecipient(), mintRecipient, "messenger got the stored mintRecipient");
+>>>>>>> sungrak/cctp-v2-contracts
     }
 
     // ── T-04 hookData passthrough ──
@@ -315,10 +442,19 @@ contract TransitForwarderTest is Test {
     /// @dev T-04 used to assert hookData passed through byte-identical. The transit path no longer carries hookData
     ///      at all — this design has no use for a hook on the onward burn, and CCTP v1 has no such concept — so the
     ///      property worth pinning is the inverse: the burn must ALWAYS be the plain depositForBurn variant.
+<<<<<<< HEAD
     ///      A non-empty hook would make the relayer call depositForBurnWithHook and change what arrives on Injective.
     function test_T04_OnwardBurnCarriesNoHook() public {
         _transit(_goodMessage(AMOUNT, _nonce(4)), FEE, MAX_FEE, FINALITY);
         assertEq(relayer.lastHookData().length, 0, "the onward burn must carry no hook");
+=======
+    ///      depositForBurnWithHook would change what arrives on Injective, and v2 calls the messenger directly, so
+    ///      nothing between here and Circle would normalise a stray hook away.
+    function test_T04_OnwardBurnCarriesNoHook() public {
+        _transit(_goodMessage(AMOUNT, _nonce(4)), MAX_FEE, FINALITY);
+        assertEq(messengerMock.callCount(), 1, "plain depositForBurn");
+        assertEq(messengerMock.hookCallCount(), 0, "the onward burn must never take the hook variant");
+>>>>>>> sungrak/cctp-v2-contracts
     }
 
     // ── T-05 event ──
@@ -326,15 +462,25 @@ contract TransitForwarderTest is Test {
     function test_T05_TransitCompletedEvent() public {
         bytes32 n = _nonce(5);
         vm.expectEmit(true, false, false, true, address(fwd));
+<<<<<<< HEAD
         emit TransitCompleted(n, AMOUNT, AMOUNT - FEE, FEE, MAX_FEE, FINALITY, DEST_CALLER);
         _transit(_goodMessage(AMOUNT, n), FEE, MAX_FEE, FINALITY);
+=======
+        emit TransitCompleted(n, AMOUNT, MAX_FEE, FINALITY, DEST_CALLER);
+        _transit(_goodMessage(AMOUNT, n), MAX_FEE, FINALITY);
+>>>>>>> sungrak/cctp-v2-contracts
     }
 
     // ── T-06 no residual allowance ──
 
     function test_T06_NoResidualAllowance() public {
+<<<<<<< HEAD
         _transit(_goodMessage(AMOUNT, _nonce(6)), FEE, MAX_FEE, FINALITY);
         assertEq(usdc.allowance(address(fwd), address(relayer)), 0, "relayer must consume the whole approval");
+=======
+        _transit(_goodMessage(AMOUNT, _nonce(6)), MAX_FEE, FINALITY);
+        assertEq(usdc.allowance(address(fwd), address(messengerMock)), 0, "messenger must consume the whole approval");
+>>>>>>> sungrak/cctp-v2-contracts
     }
 
     // ── T-07 pre-existing dust is excluded from the delta ──
@@ -343,6 +489,7 @@ contract TransitForwarderTest is Test {
         uint256 dust = 777;
         usdc.mint(address(fwd), dust);
 
+<<<<<<< HEAD
         _transit(_goodMessage(AMOUNT, _nonce(7)), FEE, MAX_FEE, FINALITY);
 
         assertEq(relayer.lastTransferAmount(), AMOUNT - FEE, "dust must not inflate the transit amount");
@@ -368,6 +515,29 @@ contract TransitForwarderTest is Test {
         vm.prank(operator);
         vm.expectRevert(ITransitForwarder.ZeroFee.selector);
         executor.executeTransit(badBinding, "att", routeSender, DEST_DOMAIN, mintRecipient, 0, MAX_FEE, FINALITY, DEST_CALLER);
+=======
+        _transit(_goodMessage(AMOUNT, _nonce(7)), MAX_FEE, FINALITY);
+
+        assertEq(messengerMock.lastAmount(), AMOUNT, "dust must not inflate the transit amount");
+        assertEq(usdc.balanceOf(address(messengerMock)), AMOUNT, "messenger pulled exactly the minted amount");
+        assertEq(usdc.balanceOf(address(fwd)), dust, "dust stays for recoverERC20");
+    }
+
+    // ── T-08 no fee is taken (the v2 change) ──
+
+    /// @dev v1 forced a non-zero relayer fee (ZeroFee), because the PaymentContract rejected a zero one. v2 takes no
+    ///      fee at all, so the conservation property is exact: every unit minted is burned onward, and NOTHING is
+    ///      left behind on the forwarder or diverted anywhere else. A reintroduced fee would break this.
+    function test_T08_NoFeeIsWithheldAnywhere() public {
+        uint256 supplyBefore = usdc.totalSupply();
+        _transit(_goodMessage(AMOUNT, _nonce(8)), MAX_FEE, FINALITY);
+
+        assertEq(messengerMock.lastAmount(), AMOUNT, "the burned amount equals the minted amount exactly");
+        assertEq(usdc.balanceOf(address(fwd)), 0, "nothing withheld on the forwarder");
+        assertEq(usdc.balanceOf(address(executor)), 0, "nothing withheld on the executor");
+        assertEq(usdc.balanceOf(operator), 0, "nothing diverted to the operator");
+        assertEq(usdc.totalSupply() - supplyBefore, AMOUNT, "the mint is fully accounted for");
+>>>>>>> sungrak/cctp-v2-contracts
     }
 
     // ── T-09 / T-10 finality threshold ──
@@ -375,7 +545,13 @@ contract TransitForwarderTest is Test {
     function test_T09_InvalidFinalityReverts() public {
         vm.prank(operator);
         vm.expectRevert(ITransitForwarder.InvalidFinalityThreshold.selector);
+<<<<<<< HEAD
         executor.executeTransit(_goodMessage(AMOUNT, _nonce(9)), "att", routeSender, DEST_DOMAIN, mintRecipient, FEE, MAX_FEE, 1500, DEST_CALLER);
+=======
+        executor.executeTransit(
+            _goodMessage(AMOUNT, _nonce(9)), "att", routeSender, DEST_DOMAIN, mintRecipient, MAX_FEE, 1500, DEST_CALLER
+        );
+>>>>>>> sungrak/cctp-v2-contracts
     }
 
     function test_T09b_FinalityCheckedBeforeBinding() public {
@@ -384,6 +560,7 @@ contract TransitForwarderTest is Test {
         );
         vm.prank(operator);
         vm.expectRevert(ITransitForwarder.InvalidFinalityThreshold.selector);
+<<<<<<< HEAD
         executor.executeTransit(badBinding, "att", routeSender, DEST_DOMAIN, mintRecipient, FEE, MAX_FEE, 1500, DEST_CALLER);
     }
 
@@ -424,15 +601,80 @@ contract TransitForwarderTest is Test {
     function test_T14b_MaxFeeZeroAccepted() public {
         _transit(_goodMessage(AMOUNT, _nonce(141)), FEE, 0, FINALITY);
         assertEq(relayer.lastMaxFee(), 0);
+=======
+        executor.executeTransit(badBinding, "att", routeSender, DEST_DOMAIN, mintRecipient, MAX_FEE, 1500, DEST_CALLER);
+    }
+
+    function test_T10_BothFinalityValuesAccepted() public {
+        _transit(_goodMessage(AMOUNT, _nonce(101)), MAX_FEE, 1000);
+        assertEq(messengerMock.lastMinFinality(), 1000);
+        _transit(_goodMessage(AMOUNT, _nonce(102)), MAX_FEE, 2000);
+        assertEq(messengerMock.lastMinFinality(), 2000);
+    }
+
+    // ── T-11 ~ T-14 maxFee boundaries (v2 bounds it against `minted`, since nothing is deducted first) ──
+
+    function test_T11_MaxFeeEqualToMintedReverts() public {
+        vm.prank(operator);
+        vm.expectRevert(ITransitForwarder.InvalidMaxFee.selector);
+        executor.executeTransit(
+            _goodMessage(AMOUNT, _nonce(11)),
+            "att",
+            routeSender,
+            DEST_DOMAIN,
+            mintRecipient,
+            AMOUNT,
+            FINALITY,
+            DEST_CALLER
+        );
+    }
+
+    function test_T12_MaxFeeAboveMintedReverts() public {
+        vm.prank(operator);
+        vm.expectRevert(ITransitForwarder.InvalidMaxFee.selector);
+        executor.executeTransit(
+            _goodMessage(AMOUNT, _nonce(12)),
+            "att",
+            routeSender,
+            DEST_DOMAIN,
+            mintRecipient,
+            AMOUNT + 1,
+            FINALITY,
+            DEST_CALLER
+        );
+    }
+
+    /// @dev The accepting side of the same strict boundary: maxFee == minted - 1 is the largest legal value.
+    function test_T13_MaxFeeJustBelowMintedAccepted() public {
+        _transit(_goodMessage(AMOUNT, _nonce(13)), AMOUNT - 1, FINALITY);
+        assertEq(messengerMock.lastAmount(), AMOUNT, "the full amount is still burned");
+        assertEq(messengerMock.lastMaxFee(), AMOUNT - 1);
+    }
+
+    /// @dev A one-unit transit: the smallest amount for which a legal maxFee (0) exists.
+    function test_T14_MinimalTransitOfOneUnit() public {
+        _transit(_goodMessage(1, _nonce(14)), 0, FINALITY);
+        assertEq(messengerMock.lastAmount(), 1);
+    }
+
+    function test_T14b_MaxFeeZeroAccepted() public {
+        _transit(_goodMessage(AMOUNT, _nonce(141)), 0, FINALITY);
+        assertEq(messengerMock.lastMaxFee(), 0);
+>>>>>>> sungrak/cctp-v2-contracts
     }
 
     // ── T-15 a failed attempt leaves the nonce spendable ──
 
+<<<<<<< HEAD
     function test_T15_RetryAfterFailedSplit() public {
+=======
+    function test_T15_RetryAfterFailedMaxFee() public {
+>>>>>>> sungrak/cctp-v2-contracts
         bytes32 n = _nonce(15);
         bytes memory msg_ = _goodMessage(AMOUNT, n);
 
         vm.prank(operator);
+<<<<<<< HEAD
         vm.expectRevert(ITransitForwarder.FeeExceedsMinted.selector);
         executor.executeTransit(msg_, "att", routeSender, DEST_DOMAIN, mintRecipient, AMOUNT, 0, FINALITY, DEST_CALLER);
 
@@ -440,6 +682,15 @@ contract TransitForwarderTest is Test {
 
         _transit(msg_, FEE, MAX_FEE, FINALITY); // same message, corrected parameters
         assertEq(relayer.lastTransferAmount(), AMOUNT - FEE);
+=======
+        vm.expectRevert(ITransitForwarder.InvalidMaxFee.selector);
+        executor.executeTransit(msg_, "att", routeSender, DEST_DOMAIN, mintRecipient, AMOUNT, FINALITY, DEST_CALLER);
+
+        assertFalse(transmitter.usedNonce(n), "the whole tx rolled back, so the nonce is unspent");
+
+        _transit(msg_, MAX_FEE, FINALITY); // same message, corrected parameters
+        assertEq(messengerMock.lastAmount(), AMOUNT);
+>>>>>>> sungrak/cctp-v2-contracts
         assertTrue(transmitter.usedNonce(n));
     }
 
@@ -451,7 +702,11 @@ contract TransitForwarderTest is Test {
         );
         vm.prank(operator);
         vm.expectRevert(ITransitForwarder.WrongDestination.selector);
+<<<<<<< HEAD
         executor.executeTransit(m, "att", routeSender, DEST_DOMAIN, mintRecipient, FEE, MAX_FEE, FINALITY, DEST_CALLER);
+=======
+        executor.executeTransit(m, "att", routeSender, DEST_DOMAIN, mintRecipient, MAX_FEE, FINALITY, DEST_CALLER);
+>>>>>>> sungrak/cctp-v2-contracts
     }
 
     /// @dev Reached by calling the forwarder DIRECTLY as the executor, because the honest path cannot produce it:
@@ -472,20 +727,43 @@ contract TransitForwarderTest is Test {
         usdc.mint(address(fwd), AMOUNT); // the balance bound must not be what rejects this
         vm.prank(address(executor));
         vm.expectRevert(ITransitForwarder.WrongRecipient.selector);
+<<<<<<< HEAD
         fwd.transferMinted(m, AMOUNT, FEE, MAX_FEE, FINALITY, DEST_CALLER);
+=======
+        fwd.transferMinted(m, AMOUNT, MAX_FEE, FINALITY, DEST_CALLER);
+>>>>>>> sungrak/cctp-v2-contracts
     }
 
     function test_T18_ReceiveFailed() public {
         transmitter.setForceFail(true);
         vm.prank(operator);
         vm.expectRevert(ITransitExecutor.ReceiveFailed.selector);
+<<<<<<< HEAD
         executor.executeTransit(_goodMessage(AMOUNT, _nonce(18)), "att", routeSender, DEST_DOMAIN, mintRecipient, FEE, MAX_FEE, FINALITY, DEST_CALLER);
+=======
+        executor.executeTransit(
+            _goodMessage(AMOUNT, _nonce(18)),
+            "att",
+            routeSender,
+            DEST_DOMAIN,
+            mintRecipient,
+            MAX_FEE,
+            FINALITY,
+            DEST_CALLER
+        );
+>>>>>>> sungrak/cctp-v2-contracts
     }
 
     function test_T19_NothingMinted() public {
         vm.prank(operator);
         vm.expectRevert(ITransitExecutor.NothingMinted.selector);
+<<<<<<< HEAD
         executor.executeTransit(_goodMessage(0, _nonce(19)), "att", routeSender, DEST_DOMAIN, mintRecipient, FEE, MAX_FEE, FINALITY, DEST_CALLER);
+=======
+        executor.executeTransit(
+            _goodMessage(0, _nonce(19)), "att", routeSender, DEST_DOMAIN, mintRecipient, MAX_FEE, FINALITY, DEST_CALLER
+        );
+>>>>>>> sungrak/cctp-v2-contracts
     }
 
     /// @dev T-20 used to assert a named MalformedMessage on a short message. That gate is gone on purpose — the
@@ -496,11 +774,16 @@ contract TransitForwarderTest is Test {
         usdc.mint(address(fwd), AMOUNT);
         vm.prank(address(executor));
         vm.expectRevert();
+<<<<<<< HEAD
         fwd.transferMinted(short_, AMOUNT, FEE, MAX_FEE, FINALITY, DEST_CALLER);
+=======
+        fwd.transferMinted(short_, AMOUNT, MAX_FEE, FINALITY, DEST_CALLER);
+>>>>>>> sungrak/cctp-v2-contracts
     }
 
     function test_T21_NonceReplayRejected() public {
         bytes32 n = _nonce(21);
+<<<<<<< HEAD
         _transit(_goodMessage(AMOUNT, n), FEE, MAX_FEE, FINALITY);
 
         vm.prank(operator);
@@ -509,6 +792,17 @@ contract TransitForwarderTest is Test {
     }
 
 
+=======
+        _transit(_goodMessage(AMOUNT, n), MAX_FEE, FINALITY);
+
+        vm.prank(operator);
+        vm.expectRevert(ITransitExecutor.ReceiveFailed.selector);
+        executor.executeTransit(
+            _goodMessage(AMOUNT, n), "att", routeSender, DEST_DOMAIN, mintRecipient, MAX_FEE, FINALITY, DEST_CALLER
+        );
+    }
+
+>>>>>>> sungrak/cctp-v2-contracts
     // ── T-22 refund at mint time ──
 
     function test_T22_RefundGoesToTheRouteSender() public {
@@ -569,16 +863,27 @@ contract TransitForwarderTest is Test {
         vm.startPrank(attacker);
         // Transit surface: executor-gated on the forwarder, operator-gated on the executor in front of it.
         vm.expectRevert(ITransitForwarder.NotExecutor.selector);
+<<<<<<< HEAD
         fwd.transferMinted(m, AMOUNT, FEE, MAX_FEE, FINALITY, DEST_CALLER);
 
         vm.expectRevert(ITransitForwarder.NotExecutor.selector);
         fwd.transferMinted(m, AMOUNT, FEE, MAX_FEE, FINALITY, DEST_CALLER);
+=======
+        fwd.transferMinted(m, AMOUNT, MAX_FEE, FINALITY, DEST_CALLER);
+
+        vm.expectRevert(ITransitForwarder.NotExecutor.selector);
+        fwd.transferMinted(m, AMOUNT, MAX_FEE, FINALITY, DEST_CALLER);
+>>>>>>> sungrak/cctp-v2-contracts
 
         vm.expectRevert(ITransitForwarder.NotExecutor.selector);
         fwd.refundMinted(m, AMOUNT);
 
         vm.expectRevert(ITransitExecutor.NotOperator.selector);
+<<<<<<< HEAD
         executor.executeTransit(m, "att", routeSender, DEST_DOMAIN, mintRecipient, FEE, MAX_FEE, FINALITY, DEST_CALLER);
+=======
+        executor.executeTransit(m, "att", routeSender, DEST_DOMAIN, mintRecipient, MAX_FEE, FINALITY, DEST_CALLER);
+>>>>>>> sungrak/cctp-v2-contracts
 
         // Recovery surface: operator-gated.
         vm.expectRevert(ITransitForwarder.NotOperator.selector);
@@ -593,9 +898,18 @@ contract TransitForwarderTest is Test {
 
     /// @dev Computed from string literals, not from the interface, so a signature edit cannot silently move the
     ///      target along with the assertion. Any change here breaks every deployed log consumer.
+<<<<<<< HEAD
     function test_T37_EventTopic0sAreUnchanged() public {
         assertEq(
             keccak256("TransitCompleted(bytes32,uint256,uint256,uint256,uint256,uint32,bytes32)"),
+=======
+    /// @dev ⚠️ TransitCompleted's topic0 CHANGED in forwarder v2 (feeAmount and transferAmount removed) — that break
+    ///      was deliberate and is announced in ITransitForwarder. Refunded and Recovered did NOT change, and this
+    ///      test is what keeps the v2 signature frozen from here on.
+    function test_T37_EventTopic0sAreUnchanged() public {
+        assertEq(
+            keccak256("TransitCompleted(bytes32,uint256,uint256,uint32,bytes32)"),
+>>>>>>> sungrak/cctp-v2-contracts
             TransitCompleted.selector,
             "TransitCompleted signature drifted"
         );
@@ -614,7 +928,11 @@ contract TransitForwarderTest is Test {
         // The operator cannot push funds, even along the legitimate route.
         vm.prank(operator);
         vm.expectRevert(ITransitForwarder.NotExecutor.selector);
+<<<<<<< HEAD
         fwd.transferMinted(m, AMOUNT, FEE, MAX_FEE, FINALITY, DEST_CALLER);
+=======
+        fwd.transferMinted(m, AMOUNT, MAX_FEE, FINALITY, DEST_CALLER);
+>>>>>>> sungrak/cctp-v2-contracts
 
         vm.prank(operator);
         vm.expectRevert(ITransitForwarder.NotExecutor.selector);
@@ -630,6 +948,34 @@ contract TransitForwarderTest is Test {
         fwd.recoverERC20(address(usdc), 1);
     }
 
+<<<<<<< HEAD
+=======
+    // ── T-42 / T-43 the self-defence copies of the executor's two gates ──
+
+    /// @dev Every other transit invariant is re-checked here because the executor is upgradeable. This one is the
+    ///      reason the executor exists, so it must not be the exception — an upgraded executor that stopped
+    ///      rejecting a zero destinationCaller would reopen the griefing hole one hop along.
+    function test_T42_EmptyDestinationCallerRejectedByTheForwarderToo() public {
+        bytes memory m = _goodMessage(AMOUNT, _nonce(42));
+        usdc.mint(address(fwd), AMOUNT);
+
+        vm.prank(address(executor));
+        vm.expectRevert(ITransitForwarder.EmptyDestinationCaller.selector);
+        fwd.transferMinted(m, AMOUNT, MAX_FEE, FINALITY, bytes32(0));
+    }
+
+    /// @dev The forwarder holds the attested message, so it can check the reported amount against it rather than
+    ///      only bounding it by its own balance. CCTP v1 deducts no destination-side fee, so the equality is exact.
+    function test_T43_MintedMustEqualTheAttestedAmount() public {
+        bytes memory m = _goodMessage(AMOUNT, _nonce(43));
+        usdc.mint(address(fwd), AMOUNT);
+
+        vm.prank(address(executor));
+        vm.expectRevert(ITransitForwarder.AmountMismatch.selector);
+        fwd.transferMinted(m, AMOUNT - 1, MAX_FEE, FINALITY, DEST_CALLER);
+    }
+
+>>>>>>> sungrak/cctp-v2-contracts
     // ── T-39 / T-40 the bound on the executor-reported amount ──
 
     function test_T39_MintedAboveBalanceReverts() public {
@@ -638,17 +984,27 @@ contract TransitForwarderTest is Test {
 
         vm.prank(address(executor));
         vm.expectRevert(ITransitForwarder.MissingBalance.selector);
+<<<<<<< HEAD
         fwd.transferMinted(m, AMOUNT + 1, FEE, MAX_FEE, FINALITY, DEST_CALLER);
+=======
+        fwd.transferMinted(m, AMOUNT + 1, MAX_FEE, FINALITY, DEST_CALLER);
+>>>>>>> sungrak/cctp-v2-contracts
     }
 
     function test_T40_ZeroMintedReverts() public {
         bytes memory m = _goodMessage(AMOUNT, _nonce(40));
         vm.prank(address(executor));
         vm.expectRevert(ITransitForwarder.ZeroAmount.selector);
+<<<<<<< HEAD
         fwd.transferMinted(m, 0, FEE, MAX_FEE, FINALITY, DEST_CALLER);
     }
 
 
+=======
+        fwd.transferMinted(m, 0, MAX_FEE, FINALITY, DEST_CALLER);
+    }
+
+>>>>>>> sungrak/cctp-v2-contracts
     // ── T-27 native coin rejected ──
 
     function test_T27_NativeTransfersRejected() public {
@@ -688,8 +1044,13 @@ contract TransitForwarderTest is Test {
             address(fwd),
             AMOUNT
         );
+<<<<<<< HEAD
         _transit(m, FEE, MAX_FEE, FINALITY);
         assertEq(relayer.lastTransferAmount(), AMOUNT - FEE, "non-EVM source must transit normally");
+=======
+        _transit(m, MAX_FEE, FINALITY);
+        assertEq(messengerMock.lastAmount(), AMOUNT, "non-EVM source must transit normally");
+>>>>>>> sungrak/cctp-v2-contracts
     }
 
     // ── T-31 storage layout (packing is a beacon-upgrade invariant) ──
@@ -711,12 +1072,17 @@ contract TransitForwarderTest is Test {
 
     function test_T32_ConstructorRejectsZeroAddresses() public {
         vm.expectRevert(ITransitForwarder.ZeroAddress.selector);
+<<<<<<< HEAD
         new TransitForwarder(address(0), address(relayer), operator, address(executor), LOCAL_DOMAIN, DEST_DOMAIN);
+=======
+        new TransitForwarder(address(0), address(messengerMock), operator, address(executor), LOCAL_DOMAIN, DEST_DOMAIN);
+>>>>>>> sungrak/cctp-v2-contracts
 
         vm.expectRevert(ITransitForwarder.ZeroAddress.selector);
         new TransitForwarder(address(usdc), address(0), operator, address(executor), LOCAL_DOMAIN, DEST_DOMAIN);
 
         vm.expectRevert(ITransitForwarder.ZeroAddress.selector);
+<<<<<<< HEAD
         new TransitForwarder(address(usdc), address(relayer), address(0), address(executor), LOCAL_DOMAIN, DEST_DOMAIN);
 
         vm.expectRevert(ITransitForwarder.ZeroAddress.selector);
@@ -732,13 +1098,35 @@ contract TransitForwarderTest is Test {
         new TransitForwarder(
             address(usdc), address(wrongRelayer), operator, address(executor), LOCAL_DOMAIN, DEST_DOMAIN
         );
+=======
+        new TransitForwarder(
+            address(usdc), address(messengerMock), address(0), address(executor), LOCAL_DOMAIN, DEST_DOMAIN
+        );
+
+        vm.expectRevert(ITransitForwarder.ZeroAddress.selector);
+        new TransitForwarder(address(usdc), address(messengerMock), operator, address(0), LOCAL_DOMAIN, DEST_DOMAIN);
+    }
+
+    /// @dev v1 asserted `paymentContract.usdc() == usdc` in the constructor (UsdcMismatch). ITokenMessenger has no
+    ///      such getter, so that guard is gone and THIS is what replaced it: burnToken is always the impl's own
+    ///      `usdc` immutable, never a value read from the message. The message's burnToken is a SOURCE-domain
+    ///      address (0x5011 here) and forwarding it would burn the wrong token — or nothing at all.
+    function test_T33_BurnTokenIsAlwaysThisChainsUsdc() public {
+        _transit(_goodMessage(AMOUNT, _nonce(33)), MAX_FEE, FINALITY);
+        assertEq(messengerMock.lastBurnToken(), address(usdc), "burnToken must be the impl's usdc immutable");
+        assertTrue(messengerMock.lastBurnToken() != address(0x5011), "never the message's source-domain burnToken");
+>>>>>>> sungrak/cctp-v2-contracts
     }
 
     /// @dev A deployment whose only allowed destination is its own chain could never produce a usable route.
     function test_T34_ConstructorRejectsSelfLoopConfig() public {
         vm.expectRevert(ITransitForwarder.SelfLoop.selector);
         new TransitForwarder(
+<<<<<<< HEAD
             address(usdc), address(relayer), operator, address(executor), LOCAL_DOMAIN, LOCAL_DOMAIN
+=======
+            address(usdc), address(messengerMock), operator, address(executor), LOCAL_DOMAIN, LOCAL_DOMAIN
+>>>>>>> sungrak/cctp-v2-contracts
         );
     }
 
@@ -746,7 +1134,14 @@ contract TransitForwarderTest is Test {
     function test_T35_InitializeRejectsForeignDestination() public {
         vm.expectRevert(ITransitForwarder.UnsupportedDestination.selector);
         factory.createForwarder(routeSender, OTHER_DEST_DOMAIN, mintRecipient);
+<<<<<<< HEAD
         assertFalse(factory.isForwarderDeployed(routeSender, OTHER_DEST_DOMAIN, mintRecipient));
+=======
+        // The probe refuses the same route rather than reporting "not deployed" — see TF5b for why `false` would be
+        // the more dangerous answer.
+        vm.expectRevert(ITransitForwarder.UnsupportedDestination.selector);
+        factory.isForwarderDeployed(routeSender, OTHER_DEST_DOMAIN, mintRecipient);
+>>>>>>> sungrak/cctp-v2-contracts
     }
 
     /// @dev ⚠️ The property that makes pinning safe: transfers read per-route STORAGE, never the immutable. A beacon
@@ -754,7 +1149,11 @@ contract TransitForwarderTest is Test {
     ///      address (and the burner's committed mintRecipient) encode the original destination.
     function test_T36_BeaconUpgradeCannotRedirectExistingRoute() public {
         TransitForwarder movedAllowance = new TransitForwarder(
+<<<<<<< HEAD
             address(usdc), address(relayer), operator, address(executor), LOCAL_DOMAIN, OTHER_DEST_DOMAIN
+=======
+            address(usdc), address(messengerMock), operator, address(executor), LOCAL_DOMAIN, OTHER_DEST_DOMAIN
+>>>>>>> sungrak/cctp-v2-contracts
         );
         factory.upgradeForwarderImplementation(address(movedAllowance));
 
@@ -762,7 +1161,12 @@ contract TransitForwarderTest is Test {
         (, uint32 storedDomain,) = fwd.getRoute();
         assertEq(storedDomain, DEST_DOMAIN, "the route's own destination must be untouched");
 
+<<<<<<< HEAD
         _transit(_goodMessage(AMOUNT, _nonce(36)), FEE, MAX_FEE, FINALITY);
         assertEq(relayer.lastDomain(), DEST_DOMAIN, "funds must still go where the address committed");
+=======
+        _transit(_goodMessage(AMOUNT, _nonce(36)), MAX_FEE, FINALITY);
+        assertEq(messengerMock.lastDomain(), DEST_DOMAIN, "funds must still go where the address committed");
+>>>>>>> sungrak/cctp-v2-contracts
     }
 }

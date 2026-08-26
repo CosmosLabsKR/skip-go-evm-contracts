@@ -19,6 +19,14 @@ import {CCTPV1Message} from "../src/libraries/CCTPV1Message.sol";
  *      captured : 2026-08-13
  *      route    : Base (domain 6) -> Avalanche (domain 1), USDC burn message
  *
+<<<<<<< HEAD
+=======
+ *      ⚠️ Captured on Avalanche, but it grades the PARSER, not a chain. The v1 wire format is identical on every
+ *      CCTP domain, so this one vector covers the Polygon deployment too — do NOT read the `1` asserted below as a
+ *      config value (that lives in Config.sol as AVALANCHE_CCTP_DOMAIN / POLYGON_CCTP_DOMAIN). It is a fixed
+ *      property of these captured bytes: change the bytes and it changes with them.
+ *
+>>>>>>> sungrak/cctp-v2-contracts
  *      The bytes below are the `message` argument of that transaction's receiveMessage calldata (selector
  *      0x57ecfd28). To capture a fresh one:
  *        cast logs --rpc-url <avalanche> --address 0x8186359aF5F57FbB40c6b14A588d2A59C0C29880 \\
@@ -29,6 +37,7 @@ contract CCTPV1MessageGoldenTest is Test {
     using CCTPV1Message for bytes;
 
     /// @dev Real mainnet v1 message. Exactly 248 bytes — v1 burn messages are fixed-length.
+<<<<<<< HEAD
     bytes internal constant REAL_MESSAGE =
         hex"00000000000000060000000100000000000c4b500000000000000000000000001682ae6375c4"
             hex"e4a97e4b583bc394c861a46d89620000000000000000000000006b25532e1060ce10cc3b0a99"
@@ -45,6 +54,22 @@ contract CCTPV1MessageGoldenTest is Test {
             hex"6886e7428d65efbc5ad48c510f0a0b640453b57065ea7bc1ae2e1b75aac5b11d69d820a02be9"
             hex"48f37bd91130e72b267feb6390edeb862e672e335f4929f6770e819f466806d259c634a7415f"
             hex"634b844998634ac394aed1560d5a691c";
+=======
+    bytes internal constant REAL_MESSAGE = hex"00000000000000060000000100000000000c4b500000000000000000000000001682ae6375c4"
+        hex"e4a97e4b583bc394c861a46d89620000000000000000000000006b25532e1060ce10cc3b0a99"
+        hex"e5683b91bfde6982000000000000000000000000000000000000000000000000000000000000"
+        hex"000000000000000000000000000000000000833589fcd6edb6e08f4c7c32d4f71b54bda02913"
+        hex"0000000000000000000000004d12537e9851071c1855363e42e18bf9b24aff1e000000000000"
+        hex"0000000000000000000000000000000000000000000000827559000000000000000000000000"
+        hex"4d12537e9851071c1855363e42e18bf9b24aff1e";
+
+    /// @dev The matching Circle attestation (65-byte signature). Carried so the vector documents a complete,
+    ///      replayable receiveMessage call — the library never parses it.
+    bytes internal constant REAL_ATTESTATION = hex"523f6d3edb354f75686c995f2427218a2938ba6f856d7042f5fbcc288a946e59613f2948289d"
+        hex"6886e7428d65efbc5ad48c510f0a0b640453b57065ea7bc1ae2e1b75aac5b11d69d820a02be9"
+        hex"48f37bd91130e72b267feb6390edeb862e672e335f4929f6770e819f466806d259c634a7415f"
+        hex"634b844998634ac394aed1560d5a691c";
+>>>>>>> sungrak/cctp-v2-contracts
 
     // ── layout extent ──
 
@@ -79,7 +104,15 @@ contract CCTPV1MessageGoldenTest is Test {
 
     function test_MintRecipientIsAnEvmAddress() public {
         bytes32 r = this.mintRecipient(REAL_MESSAGE);
+<<<<<<< HEAD
         assertEq(r, bytes32(uint256(uint160(0x4D12537e9851071c1855363E42e18Bf9b24aff1E))), "MINT_RECIPIENT_OFFSET (152) drifted");
+=======
+        assertEq(
+            r,
+            bytes32(uint256(uint160(0x4D12537e9851071c1855363E42e18Bf9b24aff1E))),
+            "MINT_RECIPIENT_OFFSET (152) drifted"
+        );
+>>>>>>> sungrak/cctp-v2-contracts
         assertEq(uint256(r) >> 160, 0, "an EVM-origin recipient must have 12 zero bytes on top");
     }
 

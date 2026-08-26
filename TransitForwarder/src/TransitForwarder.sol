@@ -5,9 +5,16 @@ import {Initializable} from "openzeppelin-contracts/proxy/utils/Initializable.so
 import {IERC20} from "openzeppelin-contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "openzeppelin-contracts/token/ERC20/utils/SafeERC20.sol";
 
+<<<<<<< HEAD
 import {ICCTPV2Relayer} from "./interfaces/ICCTPV2Relayer.sol";
 import {ITransitForwarder} from "./interfaces/ITransitForwarder.sol";
 import {CCTPV1Message} from "./libraries/CCTPV1Message.sol";
+=======
+import {ITokenMessenger} from "./interfaces/ITokenMessenger.sol";
+import {ITransitForwarder} from "./interfaces/ITransitForwarder.sol";
+import {CCTPV1Message} from "./libraries/CCTPV1Message.sol";
+import {TransitBurnParams} from "./libraries/TransitBurnParams.sol";
+>>>>>>> sungrak/cctp-v2-contracts
 
 /**
  * @title TransitForwarder
@@ -16,14 +23,28 @@ import {CCTPV1Message} from "./libraries/CCTPV1Message.sol";
  *         left parked on this chain.
  *
  *         It does NOT mint. TransitExecutor calls the transmitter (which is what lands the mint here), measures the
+<<<<<<< HEAD
  *         balance delta and passes it in. The burn is delegated to the PaymentContract (CCTPV2Relayer), which
  *         already owns fee collection and depositForBurn normalisation.
+=======
+ *         balance delta and passes it in. The burn goes straight to Circle's TokenMessenger.
+ *
+ *         ⚠️ NO FEE IS TAKEN. The whole minted amount is burned onward. Until v2 the burn was delegated to the
+ *         PaymentContract (CCTPV2Relayer), whose only contribution on this path was fee collection — and it REJECTS
+ *         a zero fee (PaymentCannotBeZero), which forced this route to pay a meaningless 1-unit dust fee on every
+ *         transit. Calling the messenger directly removes the dust, the delegation, and ~34% of the gas.
+ *         `maxFee` is a different thing entirely and is untouched — see the note on transferMinted.
+>>>>>>> sungrak/cctp-v2-contracts
  *
  *         The next hop (destinationDomain, mintRecipient) is part of the CREATE2 salt and so is engraved in this
  *         address. A burner committing mintRecipient = this address is what fixes the destination — neither the
  *         operator nor the executor can redirect it.
  *
+<<<<<<< HEAD
  * @dev Config (usdc/paymentContract/operator/executor/LOCAL_DOMAIN) is impl immutable, shared by all instances and
+=======
+ * @dev Config (usdc/messenger/operator/executor/LOCAL_DOMAIN) is impl immutable, shared by all instances and
+>>>>>>> sungrak/cctp-v2-contracts
  *      rotated in bulk via a beacon upgrade. Per-route values live in proxy storage. Every entry point is
  *      non-reentrant and gated: transit to the executor, recovery to the operator.
  *
@@ -36,14 +57,27 @@ contract TransitForwarder is ITransitForwarder, Initializable {
 
     // ── config (impl immutable, shared by all instances; injected by Deployment) ──
     IERC20 public immutable usdc;
+<<<<<<< HEAD
     ICCTPV2Relayer public immutable paymentContract; // PaymentContract (burn, delegated)
+=======
+    /// @notice Circle's CCTP v2 TokenMessenger — the burn leg, called directly (no relayer in between).
+    /// @dev ⚠️ Must be the v2 messenger, never the v1 one and never a MessageTransmitter. Nothing infers the
+    ///      version at runtime; binding the right address is what makes this leg v2. The mint leg is v1 and lives
+    ///      on TransitExecutor, so the two Circle addresses this system depends on sit in different contracts.
+    ITokenMessenger public immutable messenger;
+>>>>>>> sungrak/cctp-v2-contracts
     /// @notice Authorized caller for RECOVERY only. To rotate, deploy a new impl and apply it via beacon.upgradeTo.
     address public immutable operator;
     /// @notice Authorized caller for TRANSIT only — the TransitExecutor PROXY address.
     /// @dev ⚠️ Must be the proxy, never an implementation: an impl is discarded on upgrade, and that would orphan
     ///      every forwarder at once. Enforced at deploy time by _assertIsProxy.
     address public immutable executor;
+<<<<<<< HEAD
     /// @notice This chain's CCTP domain (Avalanche). Drives the inbound binding check.
+=======
+    /// @notice The domain of the chain this impl is deployed on (Avalanche 1, Polygon 7). Drives the inbound
+    ///         binding check. Injected per chain by BaseScript — the contract itself is chain-agnostic.
+>>>>>>> sungrak/cctp-v2-contracts
     /// @dev Named for the here/there contrast with `destinationDomain` right below it.
     uint32 public immutable LOCAL_DOMAIN;
     /// @notice The only destination `initialize` accepts (Injective). A CREATION-TIME constraint only.
@@ -89,23 +123,43 @@ contract TransitForwarder is ITransitForwarder, Initializable {
     ///      same-position swap would let an un-updated caller compile and bind the wrong contract silently.
     constructor(
         address usdc_,
+<<<<<<< HEAD
         address paymentContract_,
+=======
+        address messenger_,
+>>>>>>> sungrak/cctp-v2-contracts
         address operator_,
         address executor_,
         uint32 localDomain_,
         uint32 allowedDestinationDomain_
     ) {
+<<<<<<< HEAD
         if (usdc_ == address(0) || paymentContract_ == address(0) || operator_ == address(0) || executor_ == address(0))
         {
             revert ZeroAddress();
         }
         // Enforce usdc == paymentContract.usdc == burnToken at deploy time (blocks an immutable+beacon mismatch).
         if (address(ICCTPV2Relayer(paymentContract_).usdc()) != usdc_) revert UsdcMismatch();
+=======
+        if (usdc_ == address(0) || messenger_ == address(0) || operator_ == address(0) || executor_ == address(0)) {
+            revert ZeroAddress();
+        }
+        // ⚠️ NO usdc/burnToken cross-check here any more. Until v2 the constructor asserted
+        // `paymentContract.usdc() == usdc_` (UsdcMismatch), which caught a mismatched impl at deploy time.
+        // ITokenMessenger exposes no equivalent getter — it takes burnToken per call — so that guard has no
+        // replacement on-chain. What stands in for it: `usdc` is the ONLY value ever passed as burnToken (see
+        // transferMinted), the deploy scripts compare every immutable against Config
+        // (BaseScript._assertTransitImmutablesMatch), and inspect.sh grades a live impl the same way.
+>>>>>>> sungrak/cctp-v2-contracts
         // Config sanity, checked once here rather than on every route: a deployment whose only allowed destination is
         // its own chain could never produce a usable route, and CCTP would reject the burn anyway.
         if (allowedDestinationDomain_ == localDomain_) revert SelfLoop();
         usdc = IERC20(usdc_);
+<<<<<<< HEAD
         paymentContract = ICCTPV2Relayer(paymentContract_);
+=======
+        messenger = ITokenMessenger(messenger_);
+>>>>>>> sungrak/cctp-v2-contracts
         operator = operator_;
         executor = executor_;
         // No zero-check on either domain: 0 (Ethereum) is a legitimate CCTP domain, so there is no sentinel to
@@ -121,8 +175,17 @@ contract TransitForwarder is ITransitForwarder, Initializable {
         if (_mintRecipient == bytes32(0)) revert EmptyMintRecipient();
         // This deployment routes to exactly one destination (Injective). Anything else is a typo or a
         // misunderstanding, and getting it wrong sends funds to the wrong chain irrecoverably — the CREATE2 address
+<<<<<<< HEAD
         // would still look perfectly valid. The factory cannot perform this check (ALLOWED_DESTINATION_DOMAIN is an
         // impl immutable), so it lands here and createForwarder bubbles the revert.
+=======
+        // would still look perfectly valid.
+        //
+        // The factory refuses such a route earlier, in _guardRoute, so no honest caller is ever handed the address.
+        // ⚠️ That is a guard on the factory's own views, NOT a barrier: the salt preimage and both CREATE2 inputs
+        // (beacon(), beaconInitCodeHash()) are public, so anyone determined can still derive the address off-chain
+        // and burn to it. This check STAYS: it is self-defence that assumes no particular factory.
+>>>>>>> sungrak/cctp-v2-contracts
         //
         // Note this constrains CREATION only; the stored value below is what transfers use. See the immutable's docs.
         if (_destinationDomain != ALLOWED_DESTINATION_DOMAIN) revert UnsupportedDestination();
@@ -131,6 +194,7 @@ contract TransitForwarder is ITransitForwarder, Initializable {
         mintRecipient = _mintRecipient;
     }
 
+<<<<<<< HEAD
     /// @dev 2, not 1: the executor migration replaced three entry points, so this marks an ABI generation. It is the
     ///      only on-chain way for off-chain tooling to tell which surface a beacon-upgraded proxy presents.
     function version() external pure virtual returns (uint256) {
@@ -142,10 +206,31 @@ contract TransitForwarder is ITransitForwarder, Initializable {
         bytes calldata message,
         uint256 minted,
         uint256 feeAmount,
+=======
+    /// @dev The only on-chain way for off-chain tooling to tell which surface a beacon-upgraded proxy presents.
+    ///      Bump it on every impl that changes the ABI or behaviour.
+    /// @dev v2: the relayer fee was removed. `feeAmount` is gone from transferMinted and TransitCompleted, the
+    ///      burn is dispatched to Circle's messenger directly, and the `paymentContract` immutable became
+    ///      `messenger`. Any tooling that reads version() to pick a call shape must branch on this.
+    function version() external pure virtual returns (uint256) {
+        return 2;
+    }
+
+    /// @notice Re-burn the amount the executor just caused to be minted here, toward the fixed next hop.
+    /// @dev ⚠️ `maxFee` is NOT a fee this contract takes — nothing is taken here, the full `minted` is burned. It is
+    ///      Circle's cap on the DESTINATION-side fee, deducted from what the next hop receives, and CCTP v2 requires
+    ///      it to be strictly less than the burned amount. Setting it to 0 is accepted on-chain but a fast transfer
+    ///      (finality 1000) below Circle's quoted fee will not be attested as fast; that is an off-chain property no
+    ///      guard here can see.
+    function transferMinted(
+        bytes calldata message,
+        uint256 minted,
+>>>>>>> sungrak/cctp-v2-contracts
         uint256 maxFee,
         uint32 minFinalityThreshold,
         bytes32 destinationCaller
     ) external onlyExecutor nonReentrant {
+<<<<<<< HEAD
         _checkStaticParams(feeAmount, minFinalityThreshold);
         _validateBinding(message, minted);
         uint256 transferAmount = _split(minted, feeAmount, maxFee);
@@ -165,6 +250,29 @@ contract TransitForwarder is ITransitForwarder, Initializable {
         emit TransitCompleted(
             message._getNonce(), minted, transferAmount, feeAmount, maxFee, minFinalityThreshold, destinationCaller
         );
+=======
+        // Every other transit invariant is re-checked here because the executor is upgradeable; this one is the
+        // reason the executor exists at all, so it gets the same treatment rather than being trusted upstream.
+        if (destinationCaller == bytes32(0)) revert EmptyDestinationCaller();
+        TransitBurnParams.check(minFinalityThreshold);
+        _validateBinding(message, minted);
+        // CCTP v2 requires maxFee < amount (strict); it is deducted from the minted amount on the destination.
+        if (maxFee >= minted) revert InvalidMaxFee();
+
+        // Exactly `minted` is approved and exactly `minted` is pulled → no residual allowance.
+        usdc.forceApprove(address(messenger), minted);
+        messenger.depositForBurn(
+            minted,
+            destinationDomain,
+            mintRecipient,
+            address(usdc), // the only value ever passed as burnToken — see the constructor note
+            destinationCaller,
+            maxFee,
+            minFinalityThreshold
+        );
+
+        emit TransitCompleted(message._getNonce(), minted, maxFee, minFinalityThreshold, destinationCaller);
+>>>>>>> sungrak/cctp-v2-contracts
     }
 
     /// @notice Return the just-minted funds to `sender`, skipping the onward burn entirely. The exit when the
@@ -200,6 +308,7 @@ contract TransitForwarder is ITransitForwarder, Initializable {
 
     // ── internal ──
 
+<<<<<<< HEAD
     /// @dev Amount-independent parameters. The executor checks these first; this is the self-defence copy.
     function _checkStaticParams(uint256 feeAmount, uint32 minFinalityThreshold) internal pure {
         if (feeAmount == 0) revert ZeroFee();
@@ -207,14 +316,22 @@ contract TransitForwarder is ITransitForwarder, Initializable {
         if (minFinalityThreshold != 1000 && minFinalityThreshold != 2000) revert InvalidFinalityThreshold();
     }
 
+=======
+>>>>>>> sungrak/cctp-v2-contracts
     /// @dev The message must mint to THIS forwarder, on this chain's domain — that binding is what keeps a message
     ///      on its route. Self-defence, not ceremony: the executor derives this address from mintRecipient so the
     ///      recipient check is always true on the honest path, but the executor is upgradeable and this is what
     ///      keeps the forwarder on its route regardless of what it becomes.
     ///
+<<<<<<< HEAD
     ///      The `minted` bound is all this contract does about trusting the executor's measurement. Over-reporting
     ///      cannot move more than it holds; under-reporting leaves dust for recoverERC20. That asymmetry is why an
     ///      upper bound suffices and no lower bound is possible.
+=======
+    ///      `minted` is bounded twice: it must not exceed what this contract holds, and it must equal what the
+    ///      attested message says was burned. CCTP v1 deducts no destination-side fee, so that equality is exact —
+    ///      which makes this check independent of the executor's measurement rather than a restatement of it.
+>>>>>>> sungrak/cctp-v2-contracts
     ///
     ///      ⚠️ Do NOT compare burn.messageSender against `sender`. It is bytes32 and non-EVM source domains use all
     ///      32 bytes, so the check would reject every message from them. `sender` is therefore a route key, not an
@@ -228,6 +345,7 @@ contract TransitForwarder is ITransitForwarder, Initializable {
 
         if (minted == 0) revert ZeroAmount();
         if (minted > usdc.balanceOf(address(this))) revert MissingBalance();
+<<<<<<< HEAD
     }
 
     /// @dev Split `minted` into the onward transfer and the relayer fee, then approve the PaymentContract.
@@ -247,6 +365,9 @@ contract TransitForwarder is ITransitForwarder, Initializable {
         // Exactly transferAmount + feeAmount == minted, which the relayer pulls in full → no residual allowance.
         // Cannot overflow: the sum reconstructs `minted`.
         usdc.forceApprove(address(paymentContract), minted);
+=======
+        if (minted != message._getAmount()) revert AmountMismatch();
+>>>>>>> sungrak/cctp-v2-contracts
     }
 
     function _toBytes32(address a) private pure returns (bytes32) {

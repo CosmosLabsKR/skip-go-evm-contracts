@@ -18,7 +18,7 @@ update-abis:
 # handful of files are duplicated instead of imported. Duplication's one real hazard is silent drift, and this
 # target is what makes the duplication safe to live with. Run it in CI, not only by hand.
 #
-# ⚠️ TransitForwarder targets AVALANCHE C-Chain while ForwarderFactory targets Injective EVM. That is why
+# ⚠️ TransitForwarder targets AVALANCHE C-Chain and POLYGON PoS while ForwarderFactory targets Injective EVM. That is why
 #    script/Config.sol is NOT compared here: its addresses SHOULD differ, so a value comparison would be pure noise
 #    (and would train people to ignore this target). Config has no upstream to drift from — it is chain-specific
 #    truth, verified by review and by _assertTransitImmutablesMatch against what is actually deployed.
@@ -33,21 +33,27 @@ update-abis:
 #               different Circle contract with an unrelated message layout. So CCTPV1Message.sol is original code
 #               with its own golden vector, and IReceiver.sol is no longer frozen against the v2 sibling — the
 #               function signature happens to match, but freezing it would force its documentation to describe the
-#               wrong protocol. The burn-side copy (ICCTPV2Relayer.sol) IS still frozen, because that leg IS v2.
+#               wrong protocol. The burn-side copy IS still frozen, because that leg IS v2 — but it is now
+#               ITokenMessenger.sol, not ICCTPV2Relayer.sol: TransitForwarder charges no relayer fee, so it calls
+#               Circle's messenger directly instead of delegating to the fee-collecting relayer.
+# Entries are <upstream-project>:<path-relative-to-both-projects>. The upstream differs per file: the messenger
+# interface is owned by CCTPV2Relayer (it is that project's burn leg), while remappings.txt must track the
+# ForwarderFactory sibling because it feeds type(BeaconProxy).creationCode and therefore the shared golden vector.
 TRANSIT_VERBATIM_FILES = \
-	src/interfaces/ICCTPV2Relayer.sol \
-	remappings.txt
+	CCTPV2Relayer:src/interfaces/ITokenMessenger.sol \
+	ForwarderFactory:remappings.txt
 
 TRANSIT_BUILD_SETTINGS = solc evm_version optimizer optimizer_runs via_ir auto_detect_remappings
 
 check-transit-copies:
 	@fail=0; \
-	for f in $(TRANSIT_VERBATIM_FILES); do \
-		if diff -q ForwarderFactory/$$f TransitForwarder/$$f >/dev/null 2>&1; then \
-			echo "  ok       $$f"; \
+	for e in $(TRANSIT_VERBATIM_FILES); do \
+		up=$${e%%:*}; f=$${e#*:}; \
+		if diff -q $$up/$$f TransitForwarder/$$f >/dev/null 2>&1; then \
+			echo "  ok       $$f  (upstream: $$up)"; \
 		else \
-			echo "  DRIFTED  $$f"; \
-			diff ForwarderFactory/$$f TransitForwarder/$$f || true; \
+			echo "  DRIFTED  $$f  (upstream: $$up)"; \
+			diff $$up/$$f TransitForwarder/$$f || true; \
 			fail=1; \
 		fi; \
 	done; \
@@ -64,7 +70,7 @@ check-transit-copies:
 	done; \
 	if [ $$fail -ne 0 ]; then \
 		echo ""; \
-		echo "TransitForwarder has drifted from ForwarderFactory."; \
+		echo "TransitForwarder has drifted from its upstream (named per line above)."; \
 		echo "For a VERBATIM file: re-copy from the original — do NOT hand-edit the copy (design doc DD-7)."; \
 		echo "For a build SETTING: a mismatch invalidates the shared golden vector; re-measure or revert."; \
 		exit 1; \

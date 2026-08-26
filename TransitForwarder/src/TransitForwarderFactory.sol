@@ -9,6 +9,10 @@ import {Create2} from "openzeppelin-contracts/utils/Create2.sol";
 import {UpgradeableBeacon} from "openzeppelin-contracts/proxy/beacon/UpgradeableBeacon.sol";
 import {BeaconProxy} from "openzeppelin-contracts/proxy/beacon/BeaconProxy.sol";
 
+<<<<<<< HEAD
+=======
+import {ITransitForwarder} from "./interfaces/ITransitForwarder.sol";
+>>>>>>> sungrak/cctp-v2-contracts
 import {ITransitForwarderFactory} from "./interfaces/ITransitForwarderFactory.sol";
 import {TransitForwarder} from "./TransitForwarder.sol";
 
@@ -107,13 +111,64 @@ contract TransitForwarderFactory is
         return Create2.computeAddress(salt, beaconInitCodeHash, address(this));
     }
 
+<<<<<<< HEAD
+=======
+    /// @dev ⚠️ FUNDS-CRITICAL, and the reason it guards the READ path and not just `createForwarder`.
+    ///
+    ///      A source-chain burner has to know `mintRecipient` before this forwarder exists, so it reads
+    ///      `getForwarderAddress` and then burns to whatever comes back. CREATE2 will happily predict an address for
+    ///      a route that can never be deployed — a mistyped `destinationDomain` is the realistic case — and nothing
+    ///      about that address looks wrong. Funds burned toward it are then unreachable: `destinationCaller` pins
+    ///      TransitExecutor, whose only two entry points both route through `_ensureForwarder`, which must create the
+    ///      missing forwarder and cannot. executeTransit AND executeRefund, the documented last-resort exit, both
+    ///      revert forever; the only way out is an emergency beacon impl that widens the destination.
+    ///
+    ///      So every surface that hands back route-derived information fails closed. `isForwarderDeployed` reverts
+    ///      rather than answering `false`, because `false` here reads as "not yet, but you could" — the precise
+    ///      misunderstanding that gets funds burned.
+    ///
+    ///      ⚠️ ...but ONLY for a route that does not exist yet, which is the early return below and is not an
+    ///      optimisation. The destination check reads ALLOWED_DESTINATION_DOMAIN off the beacon's CURRENT impl, and a
+    ///      beacon upgrade may legitimately move it (see that immutable's docs) — while a deployed forwarder keeps
+    ///      its own destination in proxy storage forever and goes on transiting perfectly (test_T36). Gating the
+    ///      lookup on the current impl would therefore make every already-deployed route unresolvable through this
+    ///      factory the moment the allowance moved, breaking indexers and ops tooling for live, funded addresses.
+    ///      Code at the predicted address is proof the route WAS creatable, which is the only thing this guard has
+    ///      anything to say about.
+    ///
+    ///      The impl-level check in `initialize` stays where it is: it is the forwarder's own self-defence and does
+    ///      not assume this factory.
+    ///
+    /// @return predicted The route's CREATE2 address — returned so callers do not recompute it.
+    function _guardRoute(address sender, uint32 destinationDomain, bytes32 mintRecipient)
+        private
+        view
+        returns (address predicted)
+    {
+        if (sender == address(0)) revert ZeroAddress();
+        if (mintRecipient == bytes32(0)) revert EmptyMintRecipient();
+
+        predicted = _predict(_salt(sender, destinationDomain, mintRecipient));
+        if (predicted.code.length != 0) return predicted; // already deployed → nothing left to warn about
+
+        address impl = UpgradeableBeacon(beacon).implementation();
+        if (destinationDomain != TransitForwarder(payable(impl)).ALLOWED_DESTINATION_DOMAIN()) {
+            revert ITransitForwarder.UnsupportedDestination();
+        }
+    }
+
+>>>>>>> sungrak/cctp-v2-contracts
     /// @inheritdoc ITransitForwarderFactory
     function getForwarderAddress(address sender, uint32 destinationDomain, bytes32 mintRecipient)
         external
         view
         returns (address predicted)
     {
+<<<<<<< HEAD
         predicted = _predict(_salt(sender, destinationDomain, mintRecipient));
+=======
+        predicted = _guardRoute(sender, destinationDomain, mintRecipient);
+>>>>>>> sungrak/cctp-v2-contracts
     }
 
     /// @inheritdoc ITransitForwarderFactory
@@ -124,7 +179,11 @@ contract TransitForwarderFactory is
         view
         returns (bool)
     {
+<<<<<<< HEAD
         return _predict(_salt(sender, destinationDomain, mintRecipient)).code.length != 0;
+=======
+        return _guardRoute(sender, destinationDomain, mintRecipient).code.length != 0;
+>>>>>>> sungrak/cctp-v2-contracts
     }
 
     /// @inheritdoc ITransitForwarderFactory
@@ -132,20 +191,34 @@ contract TransitForwarderFactory is
         external
         returns (address forwarder)
     {
+<<<<<<< HEAD
         if (sender == address(0)) revert ZeroAddress();
         if (mintRecipient == bytes32(0)) revert EmptyMintRecipient();
 
         bytes32 salt = _salt(sender, destinationDomain, mintRecipient);
         address predicted = _predict(salt);
         if (predicted.code.length != 0) revert ForwarderAlreadyDeployed(predicted);
+=======
+        // Rejects an unusable destination BEFORE the CREATE2, where `initialize` used to catch it afterwards.
+        address predicted = _guardRoute(sender, destinationDomain, mintRecipient);
+        if (predicted.code.length != 0) revert ForwarderAlreadyDeployed(predicted);
+
+        bytes32 salt = _salt(sender, destinationDomain, mintRecipient);
+>>>>>>> sungrak/cctp-v2-contracts
 
         forwarder = address(new BeaconProxy{salt: salt}(beacon, ""));
         // Guards the frozen-cache invariant: a mismatch means the compiled creationCode no longer matches
         // beaconInitCodeHash (build-config drift), so refuse rather than deploy to an unpredicted address.
         if (forwarder != predicted) revert AddressMismatch();
 
+<<<<<<< HEAD
         // Bubbles the forwarder's revert reason on failure — notably SelfLoop() for a route aimed at this chain,
         // which only the impl can detect (FailedInnerCall when it reverted without data).
+=======
+        // Bubbles the forwarder's revert reason on failure (FailedInnerCall when it reverted without data). Since
+        // _guardRoute, the impl's own UnsupportedDestination is no longer reachable from here — it stays as the
+        // forwarder's self-defence, not as this call's expected failure mode.
+>>>>>>> sungrak/cctp-v2-contracts
         Address.functionCall(
             forwarder, abi.encodeCall(TransitForwarder.initialize, (sender, destinationDomain, mintRecipient))
         );
@@ -162,9 +235,35 @@ contract TransitForwarderFactory is
         // on this address, and it is also the destinationCaller of messages already burned on other chains — so an
         // impl bound elsewhere would silently strand every route and every in-flight message.
         if (TransitForwarder(payable(newImplementation)).executor() != executor) revert ExecutorMismatch();
+<<<<<<< HEAD
+=======
+
+        // ⚠️ DELIBERATELY NOT CHECKED HERE: ALLOWED_DESTINATION_DOMAIN. Reviewers reach for the ExecutorMismatch
+        //    pattern above once they notice _guardRoute derives from it — decided against, 2026-08-14.
+        //
+        //    Mirroring it would FREEZE the value, and that immutable's own docs put its mutability in the design
+        //    on purpose: changing it moves the allowed set for FUTURE routes only. Destination integrity does not
+        //    rest on freezing it — it rests on the address engraving. Each forwarder's destinationDomain lives in
+        //    the CREATE2 salt and proxy storage, so no beacon upgrade can redirect an existing route
+        //    (test_T36_BeaconUpgradeCannotRedirectExistingRoute). With that intact, freezing the impl-level allowed
+        //    set buys nothing.
+        //
+        //    Residual risk: an impl with a typo'd allowedDestinationDomain_ passes here and silently changes what
+        //    this factory predicts, reports and creates. Scope is NEW routes only — deployed ones keep resolving,
+        //    which is what _guardRoute's early return protects. The guard is off-chain and already exists:
+        //    BaseScript._assertTransitImmutablesMatch diffs it against Config and refuses without
+        //    ALLOW_IMMUTABLE_REBIND=true, so moving it takes an explicit declaration.
+        //
+        //    Revisit if this subproject ever serves more than one destination, or if beacon-upgrade authority
+        //    leaves the deploy scripts.
+>>>>>>> sungrak/cctp-v2-contracts
         UpgradeableBeacon(beacon).upgradeTo(newImplementation);
         emit ForwarderImplementationUpgraded(newImplementation);
     }
 
+<<<<<<< HEAD
     function _authorizeUpgrade(address newImplementation) internal override onlyOwner {}
+=======
+    function _authorizeUpgrade(address) internal override onlyOwner {}
+>>>>>>> sungrak/cctp-v2-contracts
 }

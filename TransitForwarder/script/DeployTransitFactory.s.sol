@@ -28,7 +28,11 @@ contract DeployTransitFactoryScript is BaseScript {
 
         vm.startBroadcast();
 
+<<<<<<< HEAD
         TransitForwarder forwarderImpl = _deployTransitForwarderImpl();
+=======
+        TransitForwarder forwarderImpl = _deployTransitForwarderImpl(exec); // proxy already validated above
+>>>>>>> sungrak/cctp-v2-contracts
         TransitForwarderFactory impl = new TransitForwarderFactory();
         ERC1967Proxy proxy =
             new ERC1967Proxy(address(impl), abi.encodeCall(TransitForwarderFactory.initialize, (address(forwarderImpl))));

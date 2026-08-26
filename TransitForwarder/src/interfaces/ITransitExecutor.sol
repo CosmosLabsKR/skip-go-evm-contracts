@@ -62,6 +62,11 @@ interface ITransitExecutor {
     /// @param routeSender Route key and the forwarder's refund/recovery recipient.
     /// @param routeDestinationDomain The next hop's CCTP domain.
     /// @param routeMintRecipient The next hop's recipient. NOT the message's mintRecipient, which is the forwarder.
+<<<<<<< HEAD
+=======
+    /// @param maxFee Circle's DESTINATION-side fee cap (CCTP v2 protocol parameter), NOT a relayer charge — this
+    ///        route takes no fee. Bounded by the forwarder against the minted amount.
+>>>>>>> sungrak/cctp-v2-contracts
     /// @param destinationCaller Restricts who may call receiveMessage on the next hop. Must be non-zero — leaving
     ///        it open is the griefing path this design exists to close, one hop further along.
     /// @dev The three route arguments identify the forwarder — the same tuple the factory hashes into its CREATE2
@@ -73,7 +78,10 @@ interface ITransitExecutor {
         address routeSender,
         uint32 routeDestinationDomain,
         bytes32 routeMintRecipient,
+<<<<<<< HEAD
         uint256 feeAmount,
+=======
+>>>>>>> sungrak/cctp-v2-contracts
         uint256 maxFee,
         uint32 minFinalityThreshold,
         bytes32 destinationCaller
